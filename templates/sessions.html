@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-heading">
+    <div>
+        <p class="eyebrow">Charging Sessions</p>
+        <h2>Sessions</h2>
+    </div>
+    <div class="actions">
+        <form method="post" action="{{ url_for('start_session_form') }}">
+            <button class="primary" type="submit">Start test session</button>
+        </form>
+        <form method="post" action="{{ url_for('end_session_form') }}">
+            <button type="submit">End latest session</button>
+        </form>
+        <a class="button-link" href="{{ url_for('export_table', table_name='sessions') }}">Export CSV</a>
+    </div>
+</section>
+
+<section class="panel">
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Charger</th>
+                <th>Contract</th>
+                <th>Start</th>
+                <th>End</th>
+                <th>Energy</th>
+                <th>Price</th>
+                <th>Status</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for session in sessions %}
+            <tr>
+                <td>{{ session.id }}</td>
+                <td>{{ session.charger_id }}</td>
+                <td>{{ session.contract_id }}</td>
+                <td>{{ session.start_time }}</td>
+                <td>{{ session.end_time or "-" }}</td>
+                <td>{{ session.energy_kwh }} kWh</td>
+                <td>{{ session.price_dkk }} DKK</td>
+                <td><span class="status {{ session.status }}">{{ session.status }}</span></td>
+            </tr>
+            {% else %}
+            <tr><td colspan="8">No sessions yet. Start a test session to begin.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}

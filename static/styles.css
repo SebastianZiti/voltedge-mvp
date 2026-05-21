@@ -1,0 +1,272 @@
+:root {
+    --bg: #f5f7f4;
+    --panel: #ffffff;
+    --ink: #15231f;
+    --muted: #64736d;
+    --line: #dfe7e1;
+    --green: #13795b;
+    --blue: #245f93;
+    --yellow: #9a6a00;
+    --red: #b42318;
+    --shadow: 0 16px 40px rgba(18, 37, 31, 0.08);
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Arial, Helvetica, sans-serif;
+}
+
+.topbar {
+    display: flex;
+    justify-content: space-between;
+    gap: 24px;
+    align-items: center;
+    padding: 24px 40px;
+    background: #10241f;
+    color: white;
+}
+
+.topbar h1,
+.topbar p {
+    margin: 0;
+}
+
+.topbar h1 {
+    font-size: 24px;
+    font-weight: 700;
+}
+
+.topbar nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.topbar a {
+    color: white;
+    text-decoration: none;
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 6px;
+    padding: 9px 12px;
+}
+
+.page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 32px 24px 48px;
+}
+
+.hero,
+.page-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: 24px;
+    margin-bottom: 24px;
+}
+
+.hero h2,
+.page-heading h2 {
+    margin: 4px 0 8px;
+    font-size: 34px;
+    line-height: 1.1;
+}
+
+.lead {
+    max-width: 720px;
+    margin: 0;
+    color: var(--muted);
+    font-size: 17px;
+    line-height: 1.5;
+}
+
+.eyebrow {
+    margin: 0;
+    color: #8ccfb8;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-transform: uppercase;
+}
+
+.page .eyebrow {
+    color: var(--green);
+}
+
+.metrics {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+}
+
+.metrics article,
+.panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: var(--shadow);
+}
+
+.metrics article {
+    padding: 18px;
+}
+
+.metrics span {
+    display: block;
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 10px;
+}
+
+.metrics strong {
+    font-size: 24px;
+}
+
+.grid-two {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+}
+
+.event-panel {
+    margin-top: 20px;
+}
+
+.panel {
+    overflow: hidden;
+}
+
+.section-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--line);
+}
+
+.section-title h3,
+.explanation h3 {
+    margin: 0;
+}
+
+.section-title a,
+.button-link,
+.export-list a {
+    color: var(--blue);
+    font-weight: 700;
+    text-decoration: none;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+th,
+td {
+    text-align: left;
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--line);
+    font-size: 14px;
+}
+
+th {
+    color: var(--muted);
+    font-size: 12px;
+    text-transform: uppercase;
+}
+
+.status {
+    display: inline-block;
+    min-width: 82px;
+    text-align: center;
+    border-radius: 999px;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.available,
+.completed {
+    background: #dff5eb;
+    color: var(--green);
+}
+
+.occupied,
+.active {
+    background: #e1effb;
+    color: var(--blue);
+}
+
+.faulted {
+    background: #fde4e2;
+    color: var(--red);
+}
+
+.offline {
+    background: #eee;
+    color: #555;
+}
+
+button,
+.button-link {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: white;
+    color: var(--ink);
+    padding: 11px 14px;
+    font-size: 14px;
+    font-weight: 700;
+    cursor: pointer;
+    text-decoration: none;
+}
+
+button.primary {
+    background: var(--green);
+    color: white;
+    border-color: var(--green);
+}
+
+.actions,
+.export-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+}
+
+.explanation {
+    padding: 22px;
+}
+
+.explanation p {
+    max-width: 780px;
+    color: var(--muted);
+    line-height: 1.6;
+}
+
+@media (max-width: 900px) {
+    .topbar,
+    .hero,
+    .page-heading {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .metrics,
+    .grid-two {
+        grid-template-columns: 1fr;
+    }
+
+    table {
+        display: block;
+        overflow-x: auto;
+    }
+}

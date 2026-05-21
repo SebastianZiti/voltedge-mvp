@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="page-heading">
+    <div>
+        <p class="eyebrow">Data and Analytics</p>
+        <h2>Operational KPI and forecast</h2>
+    </div>
+    <a class="button-link" href="{{ url_for('api_kpis') }}">Open KPI JSON</a>
+</section>
+
+<section class="metrics">
+    <article>
+        <span>Forecast next hour</span>
+        <strong>{{ forecast }} kW</strong>
+    </article>
+    <article>
+        <span>Faulted chargers</span>
+        <strong>{{ kpis.faulted_chargers }}</strong>
+    </article>
+    <article>
+        <span>Incidents</span>
+        <strong>{{ kpis.incident_count }}</strong>
+    </article>
+    <article>
+        <span>Peak load</span>
+        <strong>{{ kpis.peak_load_kw }} kW</strong>
+    </article>
+</section>
+
+<section class="panel explanation">
+    <h3>ForecastService</h3>
+    <p>
+        The MVP uses a simple Python domain service. It looks at recent occupied charger telemetry,
+        calculates average load and applies a small growth factor. This keeps the model explainable
+        for the exam while still demonstrating predictive analytics.
+    </p>
+    <p>
+        In the report this maps to the Analytics bounded context and the LoadForecastCalculated
+        domain event. In the code it is intentionally implemented as plain Python functions so the
+        team can explain it line by line.
+    </p>
+    <div class="export-list">
+        <a href="{{ url_for('export_table', table_name='telemetry') }}">Download telemetry.csv</a>
+        <a href="{{ url_for('export_table', table_name='sessions') }}">Download sessions.csv</a>
+        <a href="{{ url_for('export_table', table_name='incidents') }}">Download incidents.csv</a>
+        <a href="{{ url_for('export_table', table_name='domain_events') }}">Download domain_events.csv</a>
+    </div>
+</section>
+{% endblock %}

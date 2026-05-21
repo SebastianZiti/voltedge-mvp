@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+    <div>
+        <p class="eyebrow">Operations overview</p>
+        <h2>Live status for simulated EV charging infrastructure</h2>
+        <p class="lead">
+            A simple Python MVP that connects charger telemetry, charging sessions, KPI analytics and BI export.
+        </p>
+    </div>
+    <form method="post" action="{{ url_for('simulate') }}">
+        <button class="primary" type="submit">Generate telemetry</button>
+    </form>
+</section>
+
+<section class="metrics">
+    <article>
+        <span>Total chargers</span>
+        <strong>{{ kpis.charger_count }}</strong>
+    </article>
+    <article>
+        <span>Active sessions</span>
+        <strong>{{ kpis.active_sessions }}</strong>
+    </article>
+    <article>
+        <span>Total energy</span>
+        <strong>{{ kpis.total_energy_kwh }} kWh</strong>
+    </article>
+    <article>
+        <span>Uptime</span>
+        <strong>{{ kpis.uptime_percent }}%</strong>
+    </article>
+    <article>
+        <span>Peak load</span>
+        <strong>{{ kpis.peak_load_kw }} kW</strong>
+    </article>
+    <article>
+        <span>Next hour forecast</span>
+        <strong>{{ kpis.forecast_next_hour_kw }} kW</strong>
+    </article>
+</section>
+
+<section class="grid-two">
+    <div class="panel">
+        <div class="section-title">
+            <h3>Charger status</h3>
+            <a href="{{ url_for('chargers_page') }}">View all</a>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Charger</th>
+                    <th>Location</th>
+                    <th>Status</th>
+                    <th>Max kW</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for charger in chargers %}
+                <tr>
+                    <td>{{ charger.name }}</td>
+                    <td>{{ charger.location }}</td>
+                    <td><span class="status {{ charger.status }}">{{ charger.status }}</span></td>
+                    <td>{{ charger.max_power_kw }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="panel">
+        <div class="section-title">
+            <h3>Latest telemetry</h3>
+            <a href="{{ url_for('export_table', table_name='telemetry') }}">Export CSV</a>
+        </div>
+        <table>
+            <thead>
+                <tr>
+                    <th>Charger</th>
+                    <th>Power</th>
+                    <th>Status</th>
+                    <th>Time</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in telemetry %}
+                <tr>
+                    <td>{{ row.charger_id }}</td>
+                    <td>{{ row.power_kw }} kW</td>
+                    <td><span class="status {{ row.status }}">{{ row.status }}</span></td>
+                    <td>{{ row.timestamp }}</td>
+                </tr>
+                {% else %}
+                <tr><td colspan="4">No telemetry yet. Generate telemetry to start the demo.</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="panel event-panel">
+    <div class="section-title">
+        <h3>Domain events</h3>
+        <a href="{{ url_for('export_table', table_name='domain_events') }}">Export events CSV</a>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>Event</th>
+                <th>Entity</th>
+                <th>Description</th>
+                <th>Time</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for event in events %}
+            <tr>
+                <td>{{ event.event_name }}</td>
+                <td>{{ event.entity_id }}</td>
+                <td>{{ event.description }}</td>
+                <td>{{ event.created_at }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="4">No domain events yet. Generate telemetry or start a session.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+{% endblock %}
