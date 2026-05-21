@@ -47,4 +47,27 @@
         <a href="{{ url_for('export_table', table_name='domain_events') }}">Download domain_events.csv</a>
     </div>
 </section>
+
+<section class="panel powerbi-panel">
+    <div class="section-title">
+        <h3>Power BI dashboard</h3>
+        <span class="embed-state">{{ "Embedded" if powerbi_embed_url else "Waiting for embed URL" }}</span>
+    </div>
+
+    {% if powerbi_embed_url %}
+    <iframe
+        title="VoltEdge Power BI dashboard"
+        src="{{ powerbi_embed_url }}"
+        allowfullscreen>
+    </iframe>
+    {% else %}
+    <div class="empty-embed">
+        <h4>Power BI iframe is ready</h4>
+        <p>
+            Set miljøvariablen <code>POWERBI_EMBED_URL</code> til et sikkert Power BI embed-link.
+            Så vises rapporten direkte her i analytics-siden.
+        </p>
+    </div>
+    {% endif %}
+</section>
 {% endblock %}

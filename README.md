@@ -1,38 +1,20 @@
 # VoltEdge Smart Charging Operations Intelligence MVP
 
-Dette er en simpel Python MVP til eksamen i Design og implementering af digitale løsninger.
-Den viser, hvordan VoltEdge Mobility A/S kan samle telemetri, ladesessioner, KPI'er,
-forecast og BI-eksport i en lille realistisk operations-løsning.
+Python/Flask MVP til eksamen i Design og implementering af digitale løsninger.
+Løsningen demonstrerer en lille operations-platform for VoltEdge Mobility A/S, hvor telemetri,
+ladesessioner, domain events, KPI'er, forecast og Power BI-eksport hænger sammen.
 
-MVP'en er bevidst lavet enkel, så den kan forklares af et team uden stærk kodebaggrund.
-Der bruges Python, Flask, HTML, CSS og SQLite. Der bruges ikke TypeScript eller frontend framework.
+## Hvad programmet demonstrerer
 
-## Hvad løsningen demonstrerer
-
-- Et fungerende web-dashboard.
-- Et fungerende API.
-- Simuleret telemetri fra ladestandere.
-- Ladesessioner der kan startes og afsluttes.
-- Data gemt i SQLite.
-- Analytics som Python domain service.
-- Simpelt load forecast.
-- CSV-eksport til Power BI.
-- Docker-baseret kørsel.
-- GitHub Actions CI med test og Docker build.
-
-## Domænekobling
-
-Rapportens problemfelt er fragmenteret datamodel og begrænset analyseevne hos VoltEdge.
-MVP'en viser en lille samlet datamodel, hvor telemetri, charger-status, sessioner,
-incidents og domain events kan spores samlet.
-
-DDD-begreber i MVP'en:
-
-- Bounded context: Charging Operations.
-- Entities: Charger, ChargingSession, TelemetryReading, Incident.
-- Value objects: PowerKw, EnergyKwh, MoneyDkk, ChargerStatus.
-- Domain service: ForecastService, implementeret som `forecast_next_hour`.
-- Domain events: TelemetryReceived, ChargerStatusChanged, SessionStarted, SessionEnded, LoadForecastCalculated.
+- Web-dashboard med charger-status, KPI'er, telemetry og domain events.
+- API til chargers, sessions, telemetry simulation, analytics og CSV-export.
+- DDD-inspireret domænemodel med entities, value objects, domain events og domain services.
+- SQLite som operational database.
+- Simpelt load forecast som analytics/domain service.
+- Demo sessions på tværs af alle ladestandere, så Power BI har data at arbejde med.
+- Power BI-venlig samlet CSV-rapport med dansk decimalformat.
+- Power BI iframe-slot på Analytics-siden.
+- DevSecOps-elementer: tests, CI, Docker, `/health`, `/ready`, security headers og logging.
 
 ## Start lokalt
 
@@ -44,66 +26,114 @@ pip install -r requirements.txt
 python app.py
 ```
 
-Åbn derefter:
+Åbn:
 
 ```text
 http://127.0.0.1:5001
 ```
 
-## Start med Docker
-
-```bash
-cd "/Users/sebastian/Desktop/Eksamens MVP/voltedge_mvp"
-docker build -t voltedge-mvp .
-docker run --rm -p 5001:5001 voltedge-mvp
-```
-
-## Docker i afleveringen
-
-Man skal ikke aflevere en kørende Docker-container. Man afleverer projektet med
-kode, `Dockerfile`, `requirements.txt` og denne README. Dockerfilen fungerer som
-opskriften på, hvordan appen bygges og køres.
-
-Censor eller underviser kan selv bygge og starte MVP'en med Docker:
-
-```bash
-docker build -t voltedge-mvp .
-docker run --rm -p 5001:5001 voltedge-mvp
-```
-
-Når containeren kører, kan appen åbnes her:
-
-```text
-http://127.0.0.1:5001
-```
-
-Dette opfylder eksamenskravet om anvendelse af container service, fordi MVP'en
-kan pakkes og afvikles som en Docker-container.
-
-## Demo-flow til eksamen
+## Demo-flow
 
 1. Åbn dashboardet.
-2. Klik på `Generate telemetry`.
-3. Vis at charger-status, seneste telemetri og domain events opdateres.
-4. Gå til `Sessions`.
-5. Klik `Start test session`.
-6. Klik `End latest session`.
-7. Gå til `Analytics` og vis KPI'er og forecast.
-8. Download CSV-filer og vis dem i Power BI.
-9. Forklar Docker, tests og CI/CD.
+2. Klik `Generate telemetry` et par gange.
+3. Gå til `Sessions`.
+4. Klik `Generate demo sessions`.
+5. Gå tilbage til dashboardet.
+6. Klik `Download CSV report`.
+7. Importer CSV-filen i Power BI.
+8. Gå til `Analytics` og vis KPI'er, forecast, separate CSV-exports og Power BI iframe-området.
+
+## Power BI CSV
+
+Dashboard-knappen `Download CSV report` downloader:
+
+```text
+voltedge_latest_report.csv
+```
+
+Endpoint:
+
+```text
+GET /export/latest_report.csv
+```
+
+Filen bruger semikolon og dansk decimalformat, så Power BI ikke læser `31,27` som `3127`.
+Ved import i Power BI bør du vælge:
+
+```text
+Separator: Semicolon / Semikolon
+Locale: Danish / Denmark
+```
+
+Den samlede CSV har disse kolonner:
+
+```text
+dataset;record_id;charger_id;location;status;metric;value;timestamp;description
+```
+
+`metric` forklarer hvad `value` betyder:
+
+- `max_power_kw`: ladestanderens maksimale kapacitet.
+- `power_kw`: aktuel effekt fra telemetry.
+- `energy_kwh`: energi leveret i afsluttede sessions.
+- `incident`: tællefelt for incidents.
+- `event`: tællefelt for domain events.
+
+Til Power BI-graf for energiforbrug:
+
+```text
+X-akse: charger_id
+Y-akse: Sum af value
+Filter: dataset = session
+Filter: metric = energy_kwh
+```
+
+Til graf for aktuel ladeeffekt:
+
+```text
+X-akse: charger_id
+Y-akse: Sum eller Average af value
+Filter: dataset = telemetry
+Filter: metric = power_kw
+```
+
+Separate CSV'er findes stadig:
+
+```text
+GET /export/chargers.csv
+GET /export/telemetry.csv
+GET /export/sessions.csv
+GET /export/incidents.csv
+GET /export/domain_events.csv
+```
+
+## Power BI iframe
+
+Analytics-siden har et iframe-slot til en publiceret Power BI-rapport.
+Start appen med en embed-URL:
+
+```bash
+POWERBI_EMBED_URL="https://app.powerbi.com/reportEmbed?reportId=..." python app.py
+```
+
+URL'en valideres, så kun `https://app.powerbi.com/...` accepteres.
+Selve Power BI-rapporten bygges i Power BI Desktop eller Power BI Service.
 
 ## API endpoints
 
 ```text
 GET  /health
+GET  /ready
 GET  /api/chargers
 POST /api/telemetry/simulate
 GET  /api/sessions
 POST /api/sessions/start
 POST /api/sessions/end
+POST /api/sessions/seed-demo
 GET  /api/analytics/kpis
 GET  /api/analytics/forecast
 GET  /api/events
+GET  /export/latest_report.csv
 GET  /export/chargers.csv
 GET  /export/telemetry.csv
 GET  /export/sessions.csv
@@ -111,46 +141,86 @@ GET  /export/incidents.csv
 GET  /export/domain_events.csv
 ```
 
+## DDD-kobling i koden
+
+- Bounded context: Charging Operations.
+- Entities: `Charger`, `ChargingSession`, `TelemetryReading`, `Incident`.
+- Value objects: `PowerKw`, `EnergyKwh`, `MoneyDkk`, `ChargerStatus`, `SessionStatus`.
+- Domain events: `TelemetryReceived`, `ChargerStatusChanged`, `SessionStarted`, `SessionEnded`, `IncidentOpened`, `LoadForecastCalculated`.
+- Domain service: `forecast_next_hour`.
+- Persistens: SQLite-tabellerne `chargers`, `telemetry`, `sessions`, `incidents`, `domain_events`.
+
+Domæneobjekterne ligger i `domain.py`, og service-laget mapper mellem domæneobjekter og SQLite-records i `services.py`.
+
+## DevSecOps og drift
+
+Programmet indeholder:
+
+- Unit tests i `tests/`.
+- GitHub Actions CI med test og Docker build.
+- Dockerfile med healthcheck mod `/ready`.
+- `/health` til simpel liveness.
+- `/ready` til database-readiness.
+- Security headers: CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`.
+- Request logging via Flask logger.
+- Miljøvariabler:
+  - `SERVICE_ENV`
+  - `LOG_LEVEL`
+  - `FLASK_DEBUG`
+  - `SECRET_KEY`
+  - `POWERBI_EMBED_URL`
+
 ## Test
 
 ```bash
-python -m unittest discover -s tests
+python3 -m unittest discover -s tests
 ```
 
 Testene dækker:
 
 - database seed med demo-ladestandere.
-- simulering af telemetri.
-- start og afslutning af session.
-- KPI-beregning.
-- CSV-eksport.
+- telemetry simulation.
+- start og afslutning af sessions.
+- demo sessions på alle chargers.
+- KPI-beregning, inkl. uptime hvor `faulted` ikke tæller som drift.
+- CSV-export.
+- `/ready`, security headers og Power BI iframe mount.
 
-## Power BI
+## Docker
 
-Brug CSV-eksporterne som datakilder:
+Build:
 
-- `telemetry.csv`: effekt, status og tidspunkt.
-- `sessions.csv`: energi, pris og session-status.
-- `chargers.csv`: lokation og max effekt.
-- `incidents.csv`: fejl og severity.
-- `domain_events.csv`: sporbarhed fra hændelser i systemet.
+```bash
+docker build -t voltedge-mvp .
+```
 
-Foreslåede visuals:
+Run:
 
-- Cards: total kWh, active sessions, uptime, faulted chargers.
-- Bar chart: kWh pr. charger.
-- Line chart: power_kw over tid.
-- Table: incidents og domain events.
+```bash
+docker run --rm -p 5001:5001 voltedge-mvp
+```
 
-## Hvorfor løsningen er realistisk men simpel
+Run med Power BI iframe:
 
-I en større enterprise-løsning ville VoltEdge sandsynligvis bruge Azure, PostgreSQL,
-Service Bus, API Gateway og flere microservices. I denne MVP er det samlet i én Python-app,
-fordi eksamensproduktet skal være forståeligt, demonstrerbart og realistisk at bygge.
+```bash
+docker run --rm -p 5001:5001 \
+  -e POWERBI_EMBED_URL="https://app.powerbi.com/reportEmbed?reportId=..." \
+  voltedge-mvp
+```
 
-Arkitekturen kan stadig forklares som første trin mod en større platform:
+Tjek container readiness:
 
-- SQLite kan erstattes af PostgreSQL.
-- Python domain events kan erstattes af Azure Service Bus.
-- Flask-app'en kan deles op i microservices.
-- CSV-eksport kan erstattes af et data warehouse.
+```bash
+curl http://127.0.0.1:5001/ready
+```
+
+## Realistisk videreudvikling
+
+I en enterprise-version kunne MVP'en udvides med:
+
+- PostgreSQL i stedet for SQLite.
+- Azure Service Bus i stedet for lokale domain events.
+- API Gateway foran Flask API'et.
+- Data warehouse i stedet for CSV-export.
+- Power BI semantic model med separate tabeller og relationer.
+- Produktions-WSGI server og central log/monitorering.
