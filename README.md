@@ -137,9 +137,9 @@ GET  /api/powerbi/report-data
 
 - Bounded context: Charging Operations Intelligence.
 - Entities: `Charger`, `ChargingSession`, `TelemetryReading`, `Incident`.
-- Value objects: `PowerKw`, `EnergyKwh`, `MoneyDkk`, `ChargerStatus`, `SessionStatus`.
+- Value objects: `PowerKw`, `EnergyKwh`, `MoneyDkk`, `ChargerStatus`, `SessionStatus`, `LoadForecast` (frozen).
 - Domain events: `TelemetryReceived`, `ChargerStatusChanged`, `SessionStarted`, `SessionEnded`, `IncidentOpened`, `LoadForecastCalculated`.
-- Domain service: `forecast_next_hour`.
+- Domain service: `forecast_load_next_hour` (scikit-learn lineær regression, med `forecast_next_hour` som cold-start fallback).
 - Persistens: SQLite-tabellerne `chargers`, `telemetry`, `sessions`, `incidents`, `domain_events`.
 
 Domæneobjekterne ligger i `domain.py`, og service-laget mapper mellem domæneobjekter og SQLite-records i `services.py`.
