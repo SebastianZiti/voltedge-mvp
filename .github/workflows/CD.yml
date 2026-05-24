@@ -28,11 +28,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Docker/GHCR krver at image-navne er i lowercase. github.repository_owner
+      # giver "SebastianZiti" med store bogstaver, sa vi hardcoder den
+      # lowercase form her. Hvis vi skifter ejer en dag, skal denne linje
+      # opdateres.
       - name: Build and publish Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/voltedge-mvp:latest
-            ghcr.io/${{ github.repository_owner }}/voltedge-mvp:${{ github.sha }}
+            ghcr.io/sebastianziti/voltedge-mvp:latest
+            ghcr.io/sebastianziti/voltedge-mvp:${{ github.sha }}
