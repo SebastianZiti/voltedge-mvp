@@ -13,7 +13,6 @@
         <form method="post" action="{{ url_for('simulate') }}">
             <button class="primary" type="submit">Generate telemetry</button>
         </form>
-        <a class="button-link" href="{{ url_for('export_latest_report') }}">Download CSV report</a>
     </div>
 </section>
 
@@ -75,7 +74,6 @@
     <div class="panel">
         <div class="section-title">
             <h3>Latest telemetry</h3>
-            <a href="{{ url_for('export_table', table_name='telemetry') }}">Export CSV</a>
         </div>
         <table>
             <thead>
@@ -105,7 +103,6 @@
 <section class="panel event-panel">
     <div class="section-title">
         <h3>Domain events</h3>
-        <a href="{{ url_for('export_table', table_name='domain_events') }}">Export events CSV</a>
     </div>
     <table>
         <thead>

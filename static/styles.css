@@ -258,41 +258,6 @@ button.primary {
     line-height: 1.6;
 }
 
-.powerbi-panel {
-    margin-top: 20px;
-}
-
-.powerbi-panel iframe {
-    display: block;
-    width: 100%;
-    min-height: 620px;
-    border: 0;
-    background: #f8faf9;
-}
-
-.embed-state {
-    color: var(--muted);
-    font-size: 13px;
-    font-weight: 700;
-}
-
-.empty-embed {
-    padding: 28px;
-    color: var(--muted);
-}
-
-.empty-embed h4 {
-    margin: 0 0 8px;
-    color: var(--ink);
-    font-size: 18px;
-}
-
-.empty-embed p {
-    max-width: 720px;
-    margin: 0;
-    line-height: 1.6;
-}
-
 code {
     color: var(--ink);
     font-family: "SFMono-Regular", Consolas, monospace;
@@ -317,7 +282,4 @@ code {
         overflow-x: auto;
     }
 
-    .powerbi-panel iframe {
-        min-height: 460px;
-    }
 }
