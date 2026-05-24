@@ -1,19 +1,33 @@
 import logging
 import os
-from urllib.parse import urlparse
 
-from flask import Flask, Response, jsonify, redirect, render_template, request, url_for
+from flask import jsonify, Flask, redirect, render_template, request, url_for
 
 import database
 import services
 
 
+DEFAULT_DEV_SECRET_KEY = "dev-only-change-me"
+
+
 def create_app(db_path=database.DEFAULT_DB_PATH):
     app = Flask(__name__)
     app.config["DB_PATH"] = db_path
-    app.config["SERVICE_ENV"] = os.getenv("SERVICE_ENV", "development")
-    app.config["POWERBI_EMBED_URL"] = _safe_powerbi_url(os.getenv("POWERBI_EMBED_URL", ""))
-    app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-only-change-me")
+    service_env = os.getenv("SERVICE_ENV", "development")
+    app.config["SERVICE_ENV"] = service_env
+
+    # Sikkerhed: SECRET_KEY bruges af Flask til at signere sessions/cookies.
+    # Hvis vi kører i test eller production og nogen har glemt at sætte en
+    # rigtig nøgle, så stopper vi appen med det samme — i stedet for stille
+    # at bruge den offentligt kendte default-nøgle (som ville være sårbar).
+    secret_key = os.getenv("SECRET_KEY")
+    if service_env != "development":
+        if not secret_key or secret_key == DEFAULT_DEV_SECRET_KEY:
+            raise RuntimeError(
+                "SECRET_KEY skal sættes til en stærk værdi udenfor 'development'. "
+                "Sæt miljøvariablen SECRET_KEY før appen startes."
+            )
+    app.config["SECRET_KEY"] = secret_key or DEFAULT_DEV_SECRET_KEY
     database.init_db(db_path)
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
     app.logger.propagate = False
@@ -29,8 +43,7 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "frame-src 'self' https://app.powerbi.com https://*.powerbi.com"
+            "style-src 'self' 'unsafe-inline'"
         )
         return response
 
@@ -76,8 +89,7 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
         return render_template(
             "analytics.html",
             kpis=services.calculate_kpis(db_path_from_config()),
-            forecast=services.forecast_next_hour(db_path_from_config()),
-            powerbi_embed_url=app.config["POWERBI_EMBED_URL"],
+            forecast=services.forecast_load_next_hour(db_path_from_config()).to_record(),
         )
 
     @app.post("/simulate")
@@ -95,8 +107,17 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
         services.end_latest_session(db_path_from_config())
         return redirect(url_for("sessions_page"))
 
+    def _block_seed_demo_in_production():
+        # Sikkerhed: seed-demo opretter test-data direkte i databasen.
+        # Det er kun ment til udvikling. Hvis nogen ved en fejl skubber
+        # demo-knappen i production, kunne det forurene rigtige data —
+        # så vi blokerer endpointet helt (returnerer 404) i production.
+        return app.config["SERVICE_ENV"] == "production"
+
     @app.post("/sessions/seed-demo")
     def seed_demo_sessions_form():
+        if _block_seed_demo_in_production():
+            return jsonify({"error": "Not found"}), 404
         services.seed_demo_sessions(db_path_from_config())
         return redirect(url_for("sessions_page"))
 
@@ -108,9 +129,12 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
     def ready():
         try:
             database.query_one("SELECT COUNT(*) AS count FROM chargers", db_path=db_path_from_config())
-        except Exception as error:
+        except Exception:
+            # Sikkerhed: vi logger fejldetaljerne internt (til vores eget log-system),
+            # men sender KUN "not_ready" til klienten. Hvis vi sendte fx str(error),
+            # kunne en angriber se filstier eller DB-detaljer (information disclosure).
             app.logger.exception("Readiness check failed")
-            return jsonify({"status": "not_ready", "error": str(error)}), 503
+            return jsonify({"status": "not_ready"}), 503
         return jsonify({"status": "ready", "service": "voltedge-mvp", "environment": app.config["SERVICE_ENV"]})
 
     @app.get("/api/chargers")
@@ -142,6 +166,8 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
 
     @app.post("/api/sessions/seed-demo")
     def api_seed_demo_sessions():
+        if _block_seed_demo_in_production():
+            return jsonify({"error": "Not found"}), 404
         return jsonify({"created": services.seed_demo_sessions(db_path_from_config())}), 201
 
     @app.get("/api/analytics/kpis")
@@ -150,45 +176,25 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
 
     @app.get("/api/analytics/forecast")
     def api_forecast():
-        return jsonify({"next_hour_kw": services.forecast_next_hour(db_path_from_config())})
+        return jsonify(services.forecast_load_next_hour(db_path_from_config()).to_record())
+
+    @app.post("/api/analytics/forecast/publish")
+    def api_publish_forecast():
+        return jsonify(services.publish_forecast_next_hour(db_path_from_config()).to_record()), 201
 
     @app.get("/api/events")
     def api_events():
         return jsonify(services.list_domain_events(db_path=db_path_from_config()))
 
-    @app.get("/export/<table_name>.csv")
-    def export_table(table_name):
-        try:
-            csv_data = services.export_csv(table_name, db_path_from_config())
-        except ValueError:
-            return jsonify({"error": "Unknown export"}), 404
+    @app.get("/api/powerbi/summary")
+    def api_powerbi_summary():
+        return jsonify(services.build_powerbi_summary(db_path_from_config()))
 
-        return Response(
-            csv_data,
-            mimetype="text/csv",
-            headers={"Content-Disposition": f"attachment; filename={table_name}.csv"},
-        )
-
-    @app.get("/export/latest_report.csv")
-    def export_latest_report():
-        return Response(
-            services.export_latest_report_csv(db_path_from_config()),
-            mimetype="text/csv",
-            headers={"Content-Disposition": "attachment; filename=voltedge_latest_report.csv"},
-        )
+    @app.get("/api/powerbi/report-data")
+    def api_powerbi_report_data():
+        return jsonify(services.build_powerbi_report_rows(db_path_from_config()))
 
     return app
-
-
-def _safe_powerbi_url(raw_url):
-    if not raw_url:
-        return ""
-    parsed = urlparse(raw_url)
-    if parsed.scheme != "https":
-        return ""
-    if parsed.hostname not in {"app.powerbi.com"}:
-        return ""
-    return raw_url
 
 
 app = create_app()

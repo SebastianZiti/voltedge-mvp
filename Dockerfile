@@ -10,6 +10,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+# Sikkerhed: opret en ikke-root bruger og kør appen som denne.
+# Hvis en angriber bryder ind via appen, har de KUN denne brugers rettigheder
+# inde i containeren — ikke root. Det er en "defense in depth"-foranstaltning.
+RUN useradd --create-home --shell /bin/bash appuser \
+ && chown -R appuser:appuser /app
+USER appuser
+
 EXPOSE 5001
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
