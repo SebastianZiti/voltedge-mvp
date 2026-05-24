@@ -20,6 +20,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # Sikkerhed: pip-audit slår vores deps op i en database over kendte
+      # sårbarheder (PyPI Advisory DB). Hvis der findes en CVE i Flask,
+      # numpy eller scikit-learn, fejler bygget her — så vi opdager det
+      # FØR koden kommer i production.
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
       - name: Run tests
         run: python -m unittest discover -s tests
 
