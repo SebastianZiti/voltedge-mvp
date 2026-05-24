@@ -61,7 +61,7 @@ class Charger:
     last_heartbeat: str | None = None
 
     def can_start_session(self):
-        return self.status not in {ChargerStatus.FAULTED, ChargerStatus.OFFLINE}
+        return self.status == ChargerStatus.AVAILABLE
 
     def with_status(self, status: ChargerStatus, heartbeat: str):
         return Charger(self.id, self.name, self.location, status, self.max_power_kw, heartbeat)
@@ -177,4 +177,26 @@ class DomainEvent:
             "entity_id": self.entity_id,
             "description": self.description,
             "created_at": self.created_at.isoformat(timespec="seconds"),
+        }
+
+
+@dataclass(frozen=True)
+class LoadForecast:
+    next_hour_kw: float
+    model: str
+    sample_size: int
+    r2_score: float | None = None
+    feature_names: tuple[str, ...] = ()
+    coefficients: tuple[float, ...] = ()
+    intercept: float | None = None
+
+    def to_record(self):
+        return {
+            "next_hour_kw": self.next_hour_kw,
+            "model": self.model,
+            "sample_size": self.sample_size,
+            "r2_score": self.r2_score,
+            "feature_names": list(self.feature_names),
+            "coefficients": list(self.coefficients),
+            "intercept": self.intercept,
         }

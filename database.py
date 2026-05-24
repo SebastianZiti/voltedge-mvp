@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 
@@ -13,7 +14,7 @@ def get_connection(db_path=DEFAULT_DB_PATH):
 
 
 def init_db(db_path=DEFAULT_DB_PATH):
-    with get_connection(db_path) as db:
+    with closing(get_connection(db_path)) as db:
         db.executescript(
             """
             CREATE TABLE IF NOT EXISTS chargers (
@@ -81,21 +82,41 @@ def init_db(db_path=DEFAULT_DB_PATH):
                 ("CH-004", "Aalborg Housing Site", "Aalborg", "available", 11.0),
             ],
         )
+        db.commit()
 
 
 def query_all(sql, params=(), db_path=DEFAULT_DB_PATH):
-    with get_connection(db_path) as db:
+    with closing(get_connection(db_path)) as db:
         return [dict(row) for row in db.execute(sql, params).fetchall()]
 
 
 def query_one(sql, params=(), db_path=DEFAULT_DB_PATH):
-    with get_connection(db_path) as db:
+    with closing(get_connection(db_path)) as db:
         row = db.execute(sql, params).fetchone()
         return dict(row) if row else None
 
 
 def execute(sql, params=(), db_path=DEFAULT_DB_PATH):
-    with get_connection(db_path) as db:
+    with closing(get_connection(db_path)) as db:
         cursor = db.execute(sql, params)
         db.commit()
         return cursor.lastrowid
+
+
+@contextmanager
+def transaction(db_path=DEFAULT_DB_PATH):
+    # Bruges som "with database.transaction(...) as db:" i services.py.
+    # Alt der sker mellem yield og db.commit() bliver gemt SAMMEN i databasen.
+    # Hvis noget fejler undervejs, rulles ALLE ændringer tilbage (rollback).
+    # Det sikrer aggregat-konsistens: enten gennemføres hele forretningshandlingen,
+    # eller også sker der ingenting. Forhindrer "halv-skrevne" tilstande.
+    db = get_connection(db_path)
+    try:
+        db.execute("BEGIN IMMEDIATE")  # tager skrive-lås nu, så ingen andre kan skrive imens
+        yield db
+        db.commit()  # alt gik godt -> gem ændringer
+    except Exception:
+        db.rollback()  # noget fejlede -> annullér alle ændringer
+        raise
+    finally:
+        db.close()

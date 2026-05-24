@@ -55,18 +55,31 @@ class ServiceTests(unittest.TestCase):
 
         self.assertEqual(kpis["uptime_percent"], 75.0)
 
-    def test_csv_export_contains_header(self):
-        csv_data = services.export_csv("chargers", self.db_path)
-
-        self.assertIn("id,name,location,status,max_power_kw,last_heartbeat", csv_data)
-
-    def test_latest_report_csv_contains_powerbi_friendly_header(self):
+    def test_powerbi_report_rows_contain_all_datasets(self):
         services.simulate_telemetry(self.db_path)
+        services.seed_demo_sessions(self.db_path)
 
-        csv_data = services.export_latest_report_csv(self.db_path)
+        rows = services.build_powerbi_report_rows(self.db_path)
+        datasets = {row["dataset"] for row in rows}
+        metrics = {row["metric"] for row in rows}
 
-        self.assertIn("dataset;record_id;charger_id;location;status;metric;value;timestamp;description", csv_data)
-        self.assertIn("telemetry", csv_data)
+        self.assertIn("charger", datasets)
+        self.assertIn("telemetry", datasets)
+        self.assertIn("session", datasets)
+        self.assertIn("domain_event", datasets)
+        self.assertIn("energy_kwh", metrics)
+        self.assertIn("power_kw", metrics)
+
+    def test_powerbi_summary_contains_dashboard_metrics(self):
+        services.simulate_telemetry(self.db_path)
+        services.seed_demo_sessions(self.db_path)
+
+        summary = services.build_powerbi_summary(self.db_path)
+
+        self.assertEqual(summary["charger_count"], 4)
+        self.assertEqual(summary["completed_sessions"], 9)
+        self.assertGreater(summary["total_energy_kwh"], 0)
+        self.assertIn("generated_at", summary)
 
     def test_can_seed_demo_sessions_for_all_chargers(self):
         created = services.seed_demo_sessions(self.db_path)
@@ -75,6 +88,95 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(created), 9)
         self.assertEqual({session["charger_id"] for session in sessions}, {"CH-001", "CH-002", "CH-003", "CH-004"})
         self.assertTrue(all(session["status"] == "completed" for session in sessions))
+
+    def test_cannot_start_second_session_on_occupied_charger(self):
+        first = services.start_session("CH-001", db_path=self.db_path)
+        second = services.start_session("CH-001", db_path=self.db_path)
+
+        self.assertIsNotNone(first)
+        self.assertEqual(first["status"], "active")
+        self.assertIsNone(second)
+
+    def test_cannot_start_session_on_faulted_charger(self):
+        database.execute("UPDATE chargers SET status = ? WHERE id = ?", ("faulted", "CH-002"), db_path=self.db_path)
+
+        result = services.start_session("CH-002", db_path=self.db_path)
+
+        self.assertIsNone(result)
+
+    def test_forecast_query_does_not_write_domain_events(self):
+        services.simulate_telemetry(self.db_path)
+        events_before = len(services.list_domain_events(500, self.db_path))
+
+        services.forecast_next_hour(self.db_path)
+        services.forecast_next_hour(self.db_path)
+        services.forecast_next_hour(self.db_path)
+
+        events_after = len(services.list_domain_events(500, self.db_path))
+        self.assertEqual(events_before, events_after)
+
+    def test_publish_forecast_records_domain_event(self):
+        services.simulate_telemetry(self.db_path)
+
+        services.publish_forecast_next_hour(self.db_path)
+
+        events = services.list_domain_events(500, self.db_path)
+        self.assertTrue(any(event["event_name"] == "LoadForecastCalculated" for event in events))
+
+    def test_forecast_falls_back_to_baseline_when_insufficient_data(self):
+        forecast = services.forecast_load_next_hour(self.db_path)
+
+        self.assertEqual(forecast.model, "MeanBaseline")
+        self.assertIsNone(forecast.r2_score)
+        self.assertGreaterEqual(forecast.sample_size, 0)
+
+    def test_forecast_uses_linear_regression_with_enough_occupied_telemetry(self):
+        for index in range(8):
+            ts = f"2026-05-23T{10 + index:02d}:00:00"
+            database.execute(
+                "INSERT INTO telemetry (charger_id, power_kw, voltage, current, status, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                ("CH-001", 10.0 + index * 2.0, 230.0, 10.0, "occupied", ts),
+                db_path=self.db_path,
+            )
+
+        forecast = services.forecast_load_next_hour(self.db_path)
+
+        self.assertEqual(forecast.model, "LinearRegression")
+        self.assertEqual(forecast.sample_size, 8)
+        self.assertIsNotNone(forecast.r2_score)
+        self.assertEqual(forecast.feature_names, ("time_index", "hour_of_day"))
+        self.assertEqual(len(forecast.coefficients), 2)
+        self.assertGreater(forecast.next_hour_kw, 0)
+
+    def test_load_forecast_is_frozen_value_object(self):
+        from dataclasses import FrozenInstanceError
+
+        from domain import LoadForecast
+
+        forecast = LoadForecast(next_hour_kw=12.5, model="LinearRegression", sample_size=10)
+        with self.assertRaises(FrozenInstanceError):
+            forecast.model = "Tampered"
+
+    def test_transaction_rolls_back_on_error(self):
+        sessions_before = len(services.list_sessions(self.db_path))
+        events_before = len(services.list_domain_events(500, self.db_path))
+
+        try:
+            with database.transaction(self.db_path) as db:
+                db.execute(
+                    "INSERT INTO sessions (charger_id, contract_id, start_time, status) VALUES (?, ?, ?, ?)",
+                    ("CH-001", "TEST", "2026-01-01T00:00:00", "active"),
+                )
+                db.execute(
+                    "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
+                    ("TestEvent", "x", "test", "2026-01-01T00:00:00"),
+                )
+                raise RuntimeError("forced failure")
+        except RuntimeError:
+            pass
+
+        self.assertEqual(len(services.list_sessions(self.db_path)), sessions_before)
+        self.assertEqual(len(services.list_domain_events(500, self.db_path)), events_before)
 
 
 if __name__ == "__main__":

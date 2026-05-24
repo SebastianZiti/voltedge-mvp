@@ -1,7 +1,8 @@
-import csv
 import random
 from datetime import datetime, timedelta
-from io import StringIO
+
+import numpy as np
+from sklearn.linear_model import LinearRegression
 
 import database
 from domain import (
@@ -11,6 +12,7 @@ from domain import (
     DomainEvent,
     EnergyKwh,
     Incident,
+    LoadForecast,
     MoneyDkk,
     PowerKw,
     SessionStatus,
@@ -20,6 +22,8 @@ from domain import (
 
 PRICE_PER_KWH_DKK = 3.25
 DEMO_CONTRACT_ID = "CONTRACT-DEMO"
+FORECAST_MIN_SAMPLES = 5
+FORECAST_GROWTH_FACTOR = 1.08
 
 
 def list_chargers(db_path=database.DEFAULT_DB_PATH):
@@ -59,7 +63,7 @@ def simulate_telemetry(db_path=database.DEFAULT_DB_PATH):
     for charger in chargers:
         status = ChargerStatus(
             random.choices(
-                [status.value for status in ChargerStatus],
+                [s.value for s in ChargerStatus],
                 weights=[45, 35, 12, 8],
                 k=1,
             )[0]
@@ -77,79 +81,45 @@ def simulate_telemetry(db_path=database.DEFAULT_DB_PATH):
             status=status,
             timestamp=timestamp,
         )
-        reading_record = reading.to_record()
+        record = reading.to_record()
 
-        database.execute(
-            """
-            INSERT INTO telemetry (charger_id, power_kw, voltage, current, status, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                reading_record["charger_id"],
-                reading_record["power_kw"],
-                reading_record["voltage"],
-                reading_record["current"],
-                reading_record["status"],
-                reading_record["timestamp"],
-            ),
-            db_path=db_path,
-        )
-        updated_charger = charger.with_status(status, reading_record["timestamp"])
-        database.execute(
-            """
-            UPDATE chargers
-            SET status = ?, last_heartbeat = ?
-            WHERE id = ?
-            """,
-            (updated_charger.status.value, updated_charger.last_heartbeat, updated_charger.id),
-            db_path=db_path,
-        )
-        _record_domain_event(
-            DomainEvent(
-                "TelemetryReceived",
-                charger.id,
-                f"{charger.id} reported {status.value} at {reading.power_kw.to_float()} kW",
-                timestamp,
-            ),
-            db_path,
-        )
-
-        if charger.status != status:
-            _record_domain_event(
-                DomainEvent(
-                    "ChargerStatusChanged",
-                    charger.id,
-                    f"{charger.id} changed from {charger.status.value} to {status.value}",
-                    timestamp,
-                ),
-                db_path,
+        with database.transaction(db_path) as db:
+            db.execute(
+                "INSERT INTO telemetry (charger_id, power_kw, voltage, current, status, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (record["charger_id"], record["power_kw"], record["voltage"], record["current"], record["status"], record["timestamp"]),
             )
-
-        if status == ChargerStatus.FAULTED:
-            incident = Incident(
-                charger_id=charger.id,
-                description="Simulated charger fault from telemetry",
-                severity="medium",
-                created_at=timestamp,
+            db.execute(
+                "UPDATE chargers SET status = ?, last_heartbeat = ? WHERE id = ?",
+                (status.value, record["timestamp"], charger.id),
             )
-            incident_record = incident.to_record()
-            database.execute(
-                """
-                INSERT INTO incidents (charger_id, description, severity, created_at)
-                VALUES (?, ?, ?, ?)
-                """,
+            db.execute(
+                "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
                 (
-                    incident_record["charger_id"],
-                    incident_record["description"],
-                    incident_record["severity"],
-                    incident_record["created_at"],
+                    "TelemetryReceived",
+                    charger.id,
+                    f"{charger.id} reported {status.value} at {reading.power_kw.to_float()} kW",
+                    record["timestamp"],
                 ),
-                db_path=db_path,
             )
-            _record_domain_event(
-                DomainEvent("IncidentOpened", charger.id, f"Incident opened for {charger.id}", timestamp),
-                db_path,
-            )
+            if charger.status != status:
+                db.execute(
+                    "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
+                    (
+                        "ChargerStatusChanged",
+                        charger.id,
+                        f"{charger.id} changed from {charger.status.value} to {status.value}",
+                        record["timestamp"],
+                    ),
+                )
+            if status == ChargerStatus.FAULTED:
+                db.execute(
+                    "INSERT INTO incidents (charger_id, description, severity, created_at) VALUES (?, ?, ?, ?)",
+                    (charger.id, "Simulated charger fault from telemetry", "medium", record["timestamp"]),
+                )
+                db.execute(
+                    "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
+                    ("IncidentOpened", charger.id, f"Incident opened for {charger.id}", record["timestamp"]),
+                )
 
         created.append({"charger_id": charger.id, "status": status.value, "power_kw": reading.power_kw.to_float()})
 
@@ -157,85 +127,88 @@ def simulate_telemetry(db_path=database.DEFAULT_DB_PATH):
 
 
 def start_session(charger_id=None, db_path=database.DEFAULT_DB_PATH):
-    charger_row = _select_available_charger(charger_id, db_path)
-    charger = _charger_from_row(charger_row) if charger_row else None
-    if not charger:
-        return None
-    if not charger.can_start_session():
-        return None
-
     now = datetime.now()
-    session = ChargingSession.start(charger.id, DEMO_CONTRACT_ID, now)
-    session_record = session.to_record()
-    session_id = database.execute(
-        """
-        INSERT INTO sessions (charger_id, contract_id, start_time, status)
-        VALUES (?, ?, ?, ?)
-        """,
-        (
-            session_record["charger_id"],
-            session_record["contract_id"],
-            session_record["start_time"],
-            session_record["status"],
-        ),
-        db_path=db_path,
-    )
     heartbeat = now.isoformat(timespec="seconds")
-    database.execute(
-        "UPDATE chargers SET status = ?, last_heartbeat = ? WHERE id = ?",
-        (ChargerStatus.OCCUPIED.value, heartbeat, charger.id),
-        db_path=db_path,
-    )
-    _record_domain_event(
-        DomainEvent("SessionStarted", str(session_id), f"Session {session_id} started on {charger.id}", now),
-        db_path,
-    )
+
+    with database.transaction(db_path) as db:
+        if charger_id:
+            row = db.execute(
+                "SELECT * FROM chargers WHERE id = ? AND status = 'available'",
+                (charger_id,),
+            ).fetchone()
+        else:
+            row = db.execute(
+                "SELECT * FROM chargers WHERE status = 'available' ORDER BY id LIMIT 1"
+            ).fetchone()
+
+        if not row:
+            return None
+
+        charger = _charger_from_row(row)
+        if not charger.can_start_session():
+            return None
+
+        # Atomic claim: vi opdaterer KUN hvis chargeren stadig er 'available'.
+        # Hvis en anden bruger nåede at booke den først, opdateres 0 rækker, og
+        # vi giver op. Forhindrer at to sessions kan starte på samme charger.
+        claim = db.execute(
+            "UPDATE chargers SET status = ?, last_heartbeat = ? WHERE id = ? AND status = 'available'",
+            (ChargerStatus.OCCUPIED.value, heartbeat, charger.id),
+        )
+        if claim.rowcount == 0:
+            return None  # En anden tog chargeren imens
+
+        session = ChargingSession.start(charger.id, DEMO_CONTRACT_ID, now)
+        record = session.to_record()
+        cursor = db.execute(
+            "INSERT INTO sessions (charger_id, contract_id, start_time, status) VALUES (?, ?, ?, ?)",
+            (record["charger_id"], record["contract_id"], record["start_time"], record["status"]),
+        )
+        session_id = cursor.lastrowid
+
+        db.execute(
+            "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
+            ("SessionStarted", str(session_id), f"Session {session_id} started on {charger.id}", heartbeat),
+        )
+
     return database.query_one("SELECT * FROM sessions WHERE id = ?", (session_id,), db_path=db_path)
 
 
 def end_latest_session(db_path=database.DEFAULT_DB_PATH):
-    session_row = database.query_one(
-        "SELECT * FROM sessions WHERE status = 'active' ORDER BY start_time DESC LIMIT 1",
-        db_path=db_path,
-    )
-    if not session_row:
-        return None
-
-    session = _session_from_row(session_row)
     now = datetime.now()
-    completed = session.complete(now, EnergyKwh(round(random.uniform(8, 38), 2)), PRICE_PER_KWH_DKK)
-    completed_record = completed.to_record()
+    completed_id = None
 
-    database.execute(
-        """
-        UPDATE sessions
-        SET end_time = ?, energy_kwh = ?, price_dkk = ?, status = ?
-        WHERE id = ?
-        """,
-        (
-            completed_record["end_time"],
-            completed_record["energy_kwh"],
-            completed_record["price_dkk"],
-            completed_record["status"],
-            completed.id,
-        ),
-        db_path=db_path,
-    )
-    database.execute(
-        "UPDATE chargers SET status = ?, last_heartbeat = ? WHERE id = ?",
-        (ChargerStatus.AVAILABLE.value, completed_record["end_time"], completed.charger_id),
-        db_path=db_path,
-    )
-    _record_domain_event(
-        DomainEvent(
-            "SessionEnded",
-            str(completed.id),
-            f"Session {completed.id} ended with {completed.energy_kwh.to_float()} kWh",
-            now,
-        ),
-        db_path,
-    )
-    return database.query_one("SELECT * FROM sessions WHERE id = ?", (completed.id,), db_path=db_path)
+    with database.transaction(db_path) as db:
+        row = db.execute(
+            "SELECT * FROM sessions WHERE status = 'active' ORDER BY start_time DESC LIMIT 1"
+        ).fetchone()
+        if not row:
+            return None
+
+        session = _session_from_row(row)
+        completed = session.complete(now, EnergyKwh(round(random.uniform(8, 38), 2)), PRICE_PER_KWH_DKK)
+        record = completed.to_record()
+
+        db.execute(
+            "UPDATE sessions SET end_time = ?, energy_kwh = ?, price_dkk = ?, status = ? WHERE id = ?",
+            (record["end_time"], record["energy_kwh"], record["price_dkk"], record["status"], completed.id),
+        )
+        db.execute(
+            "UPDATE chargers SET status = ?, last_heartbeat = ? WHERE id = ?",
+            (ChargerStatus.AVAILABLE.value, record["end_time"], completed.charger_id),
+        )
+        db.execute(
+            "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
+            (
+                "SessionEnded",
+                str(completed.id),
+                f"Session {completed.id} ended with {completed.energy_kwh.to_float()} kWh",
+                now.isoformat(timespec="seconds"),
+            ),
+        )
+        completed_id = completed.id
+
+    return database.query_one("SELECT * FROM sessions WHERE id = ?", (completed_id,), db_path=db_path)
 
 
 def seed_demo_sessions(db_path=database.DEFAULT_DB_PATH):
@@ -331,35 +304,82 @@ def forecast_next_hour(db_path=database.DEFAULT_DB_PATH):
     if not rows:
         return 0
     average_load = sum(float(row["power_kw"]) for row in rows) / len(rows)
-    business_growth_factor = 1.08
-    forecast = round(average_load * business_growth_factor, 2)
-    _record_event(
-        "LoadForecastCalculated",
-        "forecast-next-hour",
-        f"Forecast calculated as {forecast} kW",
-        datetime.now().isoformat(timespec="seconds"),
+    return round(average_load * FORECAST_GROWTH_FACTOR, 2)
+
+
+def forecast_load_next_hour(db_path=database.DEFAULT_DB_PATH):
+    # ML domain service: forudsiger næste times belastning.
+    # Henter alle telemetri-aflæsninger hvor chargeren faktisk ladede (status = 'occupied').
+    rows = database.query_all(
+        """
+        SELECT power_kw, timestamp
+        FROM telemetry
+        WHERE status = 'occupied'
+        ORDER BY timestamp ASC
+        """,
+        db_path=db_path,
+    )
+    sample_size = len(rows)
+
+    # Cold-start: hvis der er for få datapunkter falder vi tilbage til
+    # et simpelt gennemsnit. Det giver ingen mening at træne en model på 2 målinger.
+    if sample_size < FORECAST_MIN_SAMPLES:
+        return LoadForecast(
+            next_hour_kw=forecast_next_hour(db_path),
+            model="MeanBaseline",
+            sample_size=sample_size,
+        )
+
+    # Feature engineering: for hver måling laver vi 2 features.
+    # feats = [[time_index, hour_of_day], ...]   <- input til modellen (X)
+    # targets = [power_kw, ...]                   <- det vi vil forudsige (y)
+    feats = []
+    targets = []
+    for index, row in enumerate(rows):
+        ts = datetime.fromisoformat(row["timestamp"])
+        feats.append([index, ts.hour])  # time_index = trend, hour = døgnmønster
+        targets.append(float(row["power_kw"]))
+
+    # Træning: sklearn lærer en linje gennem datapunkterne.
+    # Modellen kan derefter forudsige y for nye X-værdier.
+    X = np.array(feats, dtype=float)
+    y = np.array(targets, dtype=float)
+    model = LinearRegression().fit(X, y)
+
+    # Prediction: hvad ville modellen forudsige for "næste måling, næste time"?
+    last_ts = datetime.fromisoformat(rows[-1]["timestamp"])
+    next_hour = (last_ts.hour + 1) % 24
+    prediction = float(model.predict(np.array([[sample_size, next_hour]]))[0])
+
+    # R²: kvalitetsmål (0-1). Tæt på 1 = modellen forklarer dataene godt.
+    r2 = float(model.score(X, y))
+
+    return LoadForecast(
+        next_hour_kw=round(max(prediction, 0.0), 2),  # kan ikke være negativ
+        model="LinearRegression",
+        sample_size=sample_size,
+        r2_score=round(r2, 3),
+        feature_names=("time_index", "hour_of_day"),
+        coefficients=tuple(round(float(c), 4) for c in model.coef_.tolist()),
+        intercept=round(float(model.intercept_), 4),
+    )
+
+
+def publish_forecast_next_hour(db_path=database.DEFAULT_DB_PATH):
+    forecast = forecast_load_next_hour(db_path)
+    _record_domain_event(
+        DomainEvent(
+            "LoadForecastCalculated",
+            "forecast-next-hour",
+            f"{forecast.model} forecast={forecast.next_hour_kw} kW r2={forecast.r2_score} n={forecast.sample_size}",
+            datetime.now(),
+        ),
         db_path,
     )
     return forecast
 
 
-def export_csv(table_name, db_path=database.DEFAULT_DB_PATH):
-    allowed_tables = {"sessions", "telemetry", "chargers", "incidents", "domain_events"}
-    if table_name not in allowed_tables:
-        raise ValueError("Unknown export table")
-
-    rows = database.query_all(f"SELECT * FROM {table_name}", db_path=db_path)
-    output = StringIO()
-    if not rows:
-        return ""
-
-    writer = csv.DictWriter(output, fieldnames=rows[0].keys())
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue()
-
-
-def export_latest_report_csv(db_path=database.DEFAULT_DB_PATH):
+def build_powerbi_report_rows(db_path=database.DEFAULT_DB_PATH):
     rows = []
 
     for charger in list_chargers(db_path):
@@ -437,43 +457,30 @@ def export_latest_report_csv(db_path=database.DEFAULT_DB_PATH):
             }
         )
 
-    output = StringIO()
-    fieldnames = ["dataset", "record_id", "charger_id", "location", "status", "metric", "value", "timestamp", "description"]
-    writer = csv.DictWriter(output, fieldnames=fieldnames, delimiter=";")
-    writer.writeheader()
-    writer.writerows([_format_powerbi_row(row) for row in rows])
-    return output.getvalue()
+    return rows
 
 
-def _format_powerbi_row(row):
-    formatted = dict(row)
-    formatted["value"] = _format_decimal_for_powerbi(row["value"])
-    return formatted
+def build_powerbi_summary(db_path=database.DEFAULT_DB_PATH):
+    kpis = calculate_kpis(db_path)
+    sessions = list_sessions(db_path)
+    telemetry = list_telemetry(500, db_path)
+    completed_sessions = [row for row in sessions if row["status"] == SessionStatus.COMPLETED.value]
+    active_sessions = [row for row in sessions if row["status"] == SessionStatus.ACTIVE.value]
 
-
-def _format_decimal_for_powerbi(value):
-    if value == "":
-        return ""
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return value
-    if number.is_integer():
-        return str(int(number))
-    return f"{number:.2f}".replace(".", ",")
-
-
-def _select_available_charger(charger_id, db_path):
-    if charger_id:
-        return database.query_one(
-            "SELECT * FROM chargers WHERE id = ? AND status != 'offline' AND status != 'faulted'",
-            (charger_id,),
-            db_path=db_path,
-        )
-    return database.query_one(
-        "SELECT * FROM chargers WHERE status = 'available' ORDER BY id LIMIT 1",
-        db_path=db_path,
-    )
+    return {
+        "charger_count": kpis["charger_count"],
+        "active_sessions": len(active_sessions),
+        "completed_sessions": len(completed_sessions),
+        "total_sessions": len(sessions),
+        "total_energy_kwh": kpis["total_energy_kwh"],
+        "peak_load_kw": kpis["peak_load_kw"],
+        "uptime_percent": kpis["uptime_percent"],
+        "faulted_chargers": kpis["faulted_chargers"],
+        "incident_count": kpis["incident_count"],
+        "forecast_next_hour_kw": kpis["forecast_next_hour_kw"],
+        "telemetry_readings": len(telemetry),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
 
 def _record_event(event_name, entity_id, description, created_at, db_path):

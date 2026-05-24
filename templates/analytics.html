@@ -12,7 +12,19 @@
 <section class="metrics">
     <article>
         <span>Forecast next hour</span>
-        <strong>{{ forecast }} kW</strong>
+        <strong>{{ forecast.next_hour_kw }} kW</strong>
+    </article>
+    <article>
+        <span>Model</span>
+        <strong>{{ forecast.model }}</strong>
+    </article>
+    <article>
+        <span>R&sup2; score</span>
+        <strong>{% if forecast.r2_score is none %}n/a{% else %}{{ forecast.r2_score }}{% endif %}</strong>
+    </article>
+    <article>
+        <span>Training samples</span>
+        <strong>{{ forecast.sample_size }}</strong>
     </article>
     <article>
         <span>Faulted chargers</span>
@@ -29,45 +41,25 @@
 </section>
 
 <section class="panel explanation">
-    <h3>ForecastService</h3>
+    <h3>LoadForecast — domain service</h3>
     <p>
-        The MVP uses a simple Python domain service. It looks at recent occupied charger telemetry,
-        calculates average load and applies a small growth factor. This keeps the model explainable
-        for the exam while still demonstrating predictive analytics.
+        The MVP trains a scikit-learn <code>LinearRegression</code> model on occupied charger
+        telemetry. Features: <code>time_index</code> and <code>hour_of_day</code>. Target:
+        <code>power_kw</code>. When fewer than five occupied readings exist, the service falls
+        back to a mean baseline (<code>MeanBaseline</code>) so the dashboard always has a value.
     </p>
+    {% if forecast.coefficients %}
     <p>
-        In the report this maps to the Analytics bounded context and the LoadForecastCalculated
-        domain event. In the code it is intentionally implemented as plain Python functions so the
-        team can explain it line by line.
+        Learned coefficients: <code>{{ forecast.feature_names }}</code> &rarr;
+        <code>{{ forecast.coefficients }}</code>, intercept <code>{{ forecast.intercept }}</code>.
+        The R&sup2; score above shows how much variance the model explains on the training set.
     </p>
-    <div class="export-list">
-        <a href="{{ url_for('export_table', table_name='telemetry') }}">Download telemetry.csv</a>
-        <a href="{{ url_for('export_table', table_name='sessions') }}">Download sessions.csv</a>
-        <a href="{{ url_for('export_table', table_name='incidents') }}">Download incidents.csv</a>
-        <a href="{{ url_for('export_table', table_name='domain_events') }}">Download domain_events.csv</a>
-    </div>
-</section>
-
-<section class="panel powerbi-panel">
-    <div class="section-title">
-        <h3>Power BI dashboard</h3>
-        <span class="embed-state">{{ "Embedded" if powerbi_embed_url else "Waiting for embed URL" }}</span>
-    </div>
-
-    {% if powerbi_embed_url %}
-    <iframe
-        title="VoltEdge Power BI dashboard"
-        src="{{ powerbi_embed_url }}"
-        allowfullscreen>
-    </iframe>
-    {% else %}
-    <div class="empty-embed">
-        <h4>Power BI iframe is ready</h4>
-        <p>
-            Set miljøvariablen <code>POWERBI_EMBED_URL</code> til et sikkert Power BI embed-link.
-            Så vises rapporten direkte her i analytics-siden.
-        </p>
-    </div>
     {% endif %}
+    <p>
+        The service maps to the <em>Charging Operations Intelligence</em> bounded context and the
+        <code>LoadForecastCalculated</code> domain event. GET paths are pure queries (CQRS);
+        publishing the forecast as a domain event happens via the explicit
+        <code>POST /api/analytics/forecast/publish</code> endpoint.
+    </p>
 </section>
 {% endblock %}
