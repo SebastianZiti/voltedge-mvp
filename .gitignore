@@ -4,3 +4,7 @@ __pycache__/
 *.pyc
 *.db
 .DS_Store
+
+# Secrets: .env kan indeholde rigtige noegler. .env.example er sikkert
+# at commit'e (placeholder-vaerdier) og fungerer som dokumentation.
+.env

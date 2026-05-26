@@ -120,17 +120,24 @@ The MVP records domain events whenever important operational facts occur:
 The events are stored in the `domain_events` table and exposed to Power BI as
 part of the operational analytics dataset.
 
-### Domain Service
+### Domain Services
 
-`services.forecast_load_next_hour` is the MVP's predictive domain service. It
-reads recent occupied charger telemetry and trains a **scikit-learn linear
-regression** on two features — `time_index` (overall trend) and `hour_of_day`
-(daily pattern) — to predict next-hour load. The result is returned as a frozen
-`LoadForecast` value object including the R² quality score.
+The MVP exposes domain services that cover the three analytics layers required
+by the case:
 
-If fewer than five occupied-status readings exist, the service falls back to a
-simple mean baseline (`services.forecast_next_hour`). This cold-start fallback
-keeps the system useful before enough data has been collected to train a model.
+- **Descriptive** — `services.calculate_kpis` aggregates *what is happening*:
+  charger count, active sessions, total energy, faulted chargers, incident
+  count, uptime percentage and peak load.
+- **Diagnostic** — `services.diagnose_incidents_by_charger` answers *why*
+  uptime is not 100% by attributing incidents to specific chargers. It runs a
+  `LEFT JOIN` so chargers with zero incidents are still reported, and orders
+  results by incident count so the worst offenders surface first.
+- **Predictive** — `services.forecast_load_next_hour` trains a **scikit-learn
+  linear regression** on two features (`time_index` and `hour_of_day`) over
+  recent occupied charger telemetry to predict next-hour load. The result is a
+  frozen `LoadForecast` value object including the R² quality score. If fewer
+  than five occupied readings exist, it falls back to a mean baseline
+  (`services.forecast_next_hour`) so the dashboard always has a value.
 
 ## Component Structure
 
@@ -234,13 +241,25 @@ For example, telemetry simulation creates a `TelemetryReading`, updates the
 
 The MVP includes:
 
-- `/health` for liveness.
-- `/ready` for database readiness.
-- Flask request logging.
-- Security headers, including CSP and `X-Content-Type-Options`.
-- Dockerfile with container healthcheck.
-- GitHub Actions CI for tests and Docker build.
-- Power BI JSON endpoints for external BI reporting.
+- `/health` for liveness and `/ready` for database readiness.
+- Flask request logging and Prometheus-format `/metrics` (consumed by
+  Prometheus + Grafana stack in `docker-compose.yml`).
+- Security headers, including CSP, `X-Content-Type-Options`, `X-Frame-Options`,
+  `Referrer-Policy` and `Permissions-Policy`.
+- Dockerfile with non-root `USER appuser` and container healthcheck.
+- `SECRET_KEY` hard-fail in `app.py`: outside `development`, the app refuses
+  to start if `SECRET_KEY` is unset or equal to any known placeholder
+  (`KNOWN_PLACEHOLDER_SECRET_KEYS`).
+- `/sessions/seed-demo` blocked (404) when `SERVICE_ENV=production`.
+- GitHub Actions CI/CD in `.github/workflows/cicd.yml`: a single pipeline
+  with two jobs — `ci` (test + `pip-audit` + Docker build) and `cd`
+  (publish image to GHCR). `cd` runs only on `main` and only if `ci` is
+  green (`needs: ci`), giving an automatic quality gate.
+- Rollback via immutable `:<commit-sha>` tags in the container registry
+  (see README → *Rollback-strategi*).
+- Power BI JSON endpoints as an anti-corruption layer for external BI
+  reporting.
 
-Production improvements would include managed database storage, authentication,
-central monitoring, alerting, secret management and a full rollback strategy.
+Production improvements would include managed database storage,
+authentication on POST endpoints, central monitoring + alerting,
+secret management (Vault/KMS) and TLS termination via reverse proxy.

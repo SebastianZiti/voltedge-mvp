@@ -386,6 +386,265 @@ r2 = float(model.score(X, y))        # kvalitets-score
 
 ---
 
+## 13) "Forklar deskriptive vs diagnostiske vs predictive analyser"
+
+> Eksamen kræver alle tre lag — vi har dem som tre **separate domain services**
+> i `services.py`:
+>
+> | Lag | Spørgsmål | Vores funktion |
+> |---|---|---|
+> | **Deskriptive** | *Hvad skete der?* | `calculate_kpis()` |
+> | **Diagnostiske** | *Hvorfor skete det?* | `diagnose_incidents_by_charger()` |
+> | **Predictive** | *Hvad vil ske?* | `forecast_load_next_hour()` |
+>
+> Alle tre vises på `/analytics`-siden, og diagnostik har sit eget API-endpoint
+> `GET /api/analytics/diagnostics`.
+
+**Forklar diagnostik i detaljer:**
+
+> *Den deskriptive KPI siger fx "vi har 7 incidents totalt". Det fortæller os
+> at noget er galt, men ikke **hvor**. Den diagnostiske funktion bryder
+> incidents ned per charger — fx "CH-002 har 5, CH-003 har 2, de andre 0".
+> Nu ved vi præcis hvor problemet er. Det er forskellen på at "se symptomer"
+> og at "finde årsagen".*
+
+**Hvis censor spørger:** "Hvordan ser SQL'en ud?"
+
+> *Vi bruger en `LEFT JOIN` mellem `chargers` og `incidents` med en
+> `GROUP BY chargers.id`. LEFT JOIN er vigtigt — det sikrer at chargers
+> **uden** incidents stadig kommer med i resultatet (med count = 0). Hvis vi
+> brugte en almindelig JOIN, ville sunde chargers helt forsvinde fra
+> rapporten, og det ville være misvisende.*
+
+**Hvis censor spørger:** "Er Power BI ikke nok til diagnostik?"
+
+> *Power BI **kan** lave drill-down, men det kræver at man manuelt opsætter
+> filtre og visualiseringer i BI-værktøjet. Ved at have det som en domain
+> service i koden, har vi en **officiel** diagnostisk udregning der altid
+> giver samme svar, kan testes, og kan tilgås via API af andre systemer
+> (alarming, dashboards, månedsrapporter osv.).*
+
+**Konkret kode at pege på** (`services.py` `diagnose_incidents_by_charger`):
+```sql
+SELECT c.id AS charger_id, c.location, c.status,
+       COUNT(i.id) AS incident_count,
+       MAX(i.created_at) AS last_incident_at,
+       (SELECT description FROM incidents
+        WHERE charger_id = c.id
+        ORDER BY created_at DESC LIMIT 1) AS last_description
+FROM chargers c
+LEFT JOIN incidents i ON i.charger_id = c.id
+GROUP BY c.id
+ORDER BY incident_count DESC, c.id ASC
+```
+
+**Tests:** 2 nye tests i `test_services.py`
+(`test_diagnose_incidents_returns_all_chargers_with_zero_when_no_incidents`,
+`test_diagnose_incidents_attributes_counts_to_correct_charger`).
+
+---
+
+## 8. Idempotent `seed_demo_sessions` (duplikat-fix)
+
+**Hvad var problemet?**
+Knappen "Generate demo sessions" indsatte 9 nye rækker i `sessions`-tabellen
+hver gang den blev trykket — selvom dataene var identiske. Det skete fordi:
+
+1. `seed_demo_sessions` lavede `INSERT` uden at tjekke om en matchende session
+   fandtes i forvejen.
+2. `base_time = datetime.now().replace(minute=0, second=0, microsecond=0)`
+   runder tiden til hele timer. To klik inden for samme time gav derfor
+   **præcis samme `start_time`** for hver demo-charger → duplikater med
+   forskellig `id` men ellers identisk indhold.
+
+**Hvorfor er det vigtigt?**
+Det er en klassisk **idempotency-mangel** — en operation skal kunne køres flere
+gange uden at ændre resultatet ud over første kald. I DDD-termer mangler
+`Session`-aggregatet en invariant: *"der må ikke findes to identiske demo-sessions
+for samme charger på samme starttidspunkt"*.
+
+**Hvordan løste vi det?**
+I `services.py:seed_demo_sessions` tjekker vi nu før hver `INSERT`:
+
+```python
+existing = database.query_one(
+    "SELECT id FROM sessions WHERE charger_id = ? AND contract_id = ? AND start_time = ?",
+    (charger_id, DEMO_CONTRACT_ID, start_time.isoformat(timespec="seconds")),
+    db_path=db_path,
+)
+if existing is not None:
+    continue
+```
+
+Hvis en demo-session med samme (charger, kontrakt, start_time) findes →
+spring INSERT over.
+
+**Bevis:** Ny test `test_seed_demo_sessions_is_idempotent` i `test_services.py`
+kalder `seed_demo_sessions` to gange og asserter at andet kald returnerer
+`[]` (intet nyoprettet) og at databasen stadig kun har 9 sessions.
+
+**Hvis censor spørger "kunne I ikke have brugt en UNIQUE constraint i databasen?"**
+> *"Jo, det ville være den mest robuste løsning på lang sigt — en UNIQUE
+> (charger_id, contract_id, start_time) i SQL ville håndhæve invariantet
+> uafhængigt af kode-stien. Vi valgte application-side-checken her for at
+> holde fix-omfanget minimalt og fordi vi ikke har et migrations-system
+> opsat. Næste skridt ville være at lægge constraint'et i `database.py`'s
+> schema-init."*
+
+---
+
+## 9. Samlet CI/CD-pipeline (`cicd.yml`)
+
+**Hvad var problemet?**
+Vi havde to separate workflows: `ci.yml` (test + audit + build) og `CD.yml`
+(publish til GHCR). De kørte **uafhængigt** — CD blev udløst af push til main
+uden at vente på CI. I praksis kunne et brudt build derfor blive publiceret
+til container registry, hvis CI tilfældigvis fejlede samtidigt.
+
+**Hvordan løste vi det?**
+Filerne er samlet i én `.github/workflows/cicd.yml` med to jobs:
+
+```yaml
+jobs:
+  ci:
+    # test + pip-audit + docker build
+  cd:
+    needs: ci                    # <- CD kører kun hvis CI er grøn
+    if: github.event_name == 'workflow_dispatch'
+        || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    # publish container til ghcr.io
+```
+
+**Hvad er det vigtigste at forstå?**
+- `needs: ci` skaber en **hård afhængighed**: CD-jobbet starter slet ikke
+  hvis ci-jobbet fejler. Det er vores **kvalitetsgate**.
+- `if:`-betingelsen sikrer at CD kun kører på main eller manuel trigger
+  (`workflow_dispatch`). PRs og feature-branches kører kun CI — ikke CD.
+- CI-jobbet indeholder **ingen** publish-steps. CD-jobbet indeholder
+  **ingen** test-steps. Adskillelsen er ren.
+
+**Hvorfor er det bedre end to separate filer?**
+1. **Synlighed:** Hele pipeline kan ses i ét billede på GitHub Actions.
+2. **Garanti for rækkefølge:** `needs:` gør det umuligt at deploye uden
+   først at have testet på samme commit.
+3. **Mindre duplikation:** Vi har én `permissions:`-blok og én `on:`-trigger
+   i stedet for to.
+
+**Hvis censor spørger "hvad er forskellen på CI og CD?"**
+> *"CI (Continuous Integration) er **kvalitetsporten** — den kører på alle
+> commits og verificerer at koden bygger, består tests og ikke har kendte
+> sårbarheder. CD (Continuous Delivery/Deployment) er **leveringen** — den
+> tager et grønt build og udgiver det som et Docker-image i registry, klar
+> til at blive deployet. Hos os: CI altid, CD kun på main, og CD kræver
+> grøn CI via `needs:`."*
+
+---
+
+## 10. `.env.example` — dokumentation af miljøvariabler
+
+**Hvad var problemet?**
+Vores app læser konfiguration fra miljøvariabler (`SECRET_KEY`, `SERVICE_ENV`,
+`DB_PATH`, `LOG_LEVEL`, `FLASK_DEBUG`), men der var **intet sted dokumenteret**
+hvilke variabler der findes, eller hvad de skal indeholde. En ny udvikler
+eller censor måtte grep'e i koden for at finde dem.
+
+**Hvad er forskellen på `.env` og `.env.example`?**
+
+| Fil | Indhold | Commits til Git? |
+|---|---|---|
+| `.env.example` | **Placeholder-værdier** (`SECRET_KEY=`, `SERVICE_ENV=development`) | **Ja** — skal kunne læses af alle |
+| `.env` | **Rigtige værdier** (fx en produktion-`SECRET_KEY`) | **Nej** — gitignored |
+
+Hvorfor er det vigtigt at adskille dem? **Fordi vores repo er public**.
+Hvis vi committed en fil med rigtige hemmeligheder, ville alle der ser
+GitHub kunne signere falske sessions, læse vores DB osv.
+
+**Hvad er valgt i denne MVP?**
+- `.env.example` ligger i `voltedge_mvp/.env.example` med safe defaults.
+- `.env` er tilføjet til `.gitignore`.
+- `docker-compose.yml` har **stadig** dev-defaults inline (admin/admin,
+  default `SECRET_KEY`), så `docker compose up` virker direkte efter klon —
+  ingen `.env` påkrævet for at komme i gang.
+- `.env.example` er primært relevant ved deploy **udenfor** Compose,
+  fx `docker run --env-file .env -e SERVICE_ENV=production ...`.
+
+**Hvis censor spørger "hvorfor har I ikke flyttet hemmeligheder ud af compose?"**
+> *"Det er en bevidst afgrænsning. Vi er et **development-MVP** der skal
+> kunne klones og køres med ét `docker compose up`-kald. Hvis vi krævede
+> `.env` for at starte, ville censor og medstuderende ramme en
+> konfigurationsfejl før de overhovedet så koden køre. Vores app-kode
+> har dog en `SECRET_KEY`-hard-fail som forhindrer at default-værdien
+> kan bruges i `SERVICE_ENV=production` — så den **rigtige** beskyttelse
+> ligger i app'en, ikke i compose-filen. `.env.example` dokumenterer
+> hvad man skal sætte når man flytter ud af dev."*
+
+**Hvis censor spørger "hvad er forskellen på `.env` og `.env.example`?"**
+> *".env.example er en **template med placeholder-værdier** som er sikker
+> at committe — den fortæller hvilke variabler der findes. `.env` er den
+> **rigtige fil** med faktiske værdier, og den er gitignored så
+> hemmeligheder ikke ender i et public repo. Workflowet er typisk:
+> `cp .env.example .env` og udfyld."*
+
+---
+
+## 11. SECRET_KEY hard-fail — loophole-fix
+
+**Hvad var problemet?**
+Vi havde to placeholder-strenge der ikke matchede hinanden:
+
+- `app.py:13`: `DEFAULT_DEV_SECRET_KEY = "dev-only-change-me"`
+- `docker-compose.yml:11`: `SECRET_KEY: local-compose-change-before-production`
+
+Den oprindelige hard-fail-check var:
+
+```python
+if not secret_key or secret_key == DEFAULT_DEV_SECRET_KEY:
+    raise RuntimeError(...)
+```
+
+Den fangede *app-default'en* men IKKE *compose-default'en*. Resultat:
+hvis nogen blot ændrede `SERVICE_ENV` til `production` i compose uden
+også at overskrive `SECRET_KEY`, ville appen **starte** med en offentligt
+kendt placeholder — fordi compose-strengen er forskellig fra app-konstanten.
+Det er en klassisk "to defaults, kun én tjekkes"-fejl.
+
+**Hvordan løste vi det?**
+Vi indførte en frozen set af **alle** placeholder-strenge der findes i
+repoet, og tjekker mod hele sættet:
+
+```python
+KNOWN_PLACEHOLDER_SECRET_KEYS = frozenset({
+    DEFAULT_DEV_SECRET_KEY,
+    "local-compose-change-before-production",
+})
+
+if not secret_key or secret_key in KNOWN_PLACEHOLDER_SECRET_KEYS:
+    raise RuntimeError(...)
+```
+
+**Bevis:** Ny test `test_production_with_compose_placeholder_secret_key_raises`
+i `test_app.py` sender præcis compose-strengen ind med `SERVICE_ENV=production`
+og asserter `RuntimeError`. Den ville være failet før fixet.
+
+**Hvis censor spørger "kunne I ikke bare have tjekket på et mønster (fx 'change' eller 'dev' i navnet)?"**
+> *"Jo, det ville være mere robust mod fremtidige placeholder-strenge. Men
+> det åbner også for falske positiver — en rigtig hemmelig nøgle kunne
+> tilfældigvis indeholde 'dev' eller 'change'. Vi valgte den eksplicitte
+> liste fordi den er **defensiv i kendte tilfælde** uden at gætte. Næste
+> skridt ville være at lægge **alle** placeholder-strenge i én konstant
+> der både importeres af tests og dokumenteres i `.env.example` — så der
+> kun er ét sted at vedligeholde dem."*
+
+**Hvis censor spørger "hvorfor er der overhovedet placeholder-strenge?"**
+> *"Fordi vi vil have at `git clone && docker compose up` virker uden
+> ekstra opsætning i development. Hvis vi havde tom `SECRET_KEY` i compose,
+> ville Flask bruge en tilfældig session-nøgle, men det er sværere at
+> forklare og test. Placeholder-strengen er en bevidst valgt 'her er
+> jeg, og jeg er ikke en rigtig nøgle' — kombineret med hard-fail udenfor
+> dev-miljøet."*
+
+---
+
 ## Hvis du går i stå
 
 Hvis du bliver spurgt om noget du ikke kan svare på, så sig hellere:

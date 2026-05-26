@@ -31,6 +31,26 @@ python app.py
 http://127.0.0.1:5001
 ```
 
+## Miljøvariabler (`.env.example`)
+
+Appen og `docker-compose.yml` læser konfiguration fra miljøvariabler.
+Hvilke der findes er dokumenteret i `.env.example` — en sikker template
+med placeholder-værdier, som er committet til Git.
+
+`.env` (uden `.example`) er **gitignored** fordi den ville indeholde
+rigtige hemmeligheder (fx en produktion-`SECRET_KEY`). Lokalt setup:
+
+```bash
+cp .env.example .env
+# Aabn .env og udfyld vaerdier til dit eget miljoe.
+```
+
+Til daglig udvikling behøves ingen `.env` — `docker-compose.yml` har
+dev-defaults inline, så `docker compose up` virker direkte efter klon.
+`.env.example` er primært relevant når du deployer udenfor Compose
+(fx `docker run --env-file .env ...` mod en server med
+`SERVICE_ENV=production`).
+
 ## Demo-flow
 
 1. Åbn dashboardet.
@@ -128,6 +148,7 @@ POST /api/sessions/end
 POST /api/sessions/seed-demo
 GET  /api/analytics/kpis
 GET  /api/analytics/forecast
+GET  /api/analytics/diagnostics
 GET  /api/events
 GET  /api/powerbi/summary
 GET  /api/powerbi/report-data
@@ -139,7 +160,10 @@ GET  /api/powerbi/report-data
 - Entities: `Charger`, `ChargingSession`, `TelemetryReading`, `Incident`.
 - Value objects: `PowerKw`, `EnergyKwh`, `MoneyDkk`, `ChargerStatus`, `SessionStatus`, `LoadForecast` (frozen).
 - Domain events: `TelemetryReceived`, `ChargerStatusChanged`, `SessionStarted`, `SessionEnded`, `IncidentOpened`, `LoadForecastCalculated`.
-- Domain service: `forecast_load_next_hour` (scikit-learn lineær regression, med `forecast_next_hour` som cold-start fallback).
+- Domain services (analytics-trioen):
+  - Deskriptiv: `calculate_kpis` (KPI'er, uptime, peak load).
+  - Diagnostisk: `diagnose_incidents_by_charger` (per-charger incident-nedbrydning).
+  - Predictive: `forecast_load_next_hour` (scikit-learn lineær regression, med `forecast_next_hour` som cold-start fallback).
 - Persistens: SQLite-tabellerne `chargers`, `telemetry`, `sessions`, `incidents`, `domain_events`.
 
 Domæneobjekterne ligger i `domain.py`, og service-laget mapper mellem domæneobjekter og SQLite-records i `services.py`.
@@ -154,8 +178,7 @@ Se også:
 Programmet indeholder:
 
 - Unit tests i `tests/`.
-- GitHub Actions CI med test og Docker build.
-- GitHub Actions CD i `.github/workflows/CD.yml`, som publicerer Docker image til GitHub Packages.
+- GitHub Actions CI/CD i `.github/workflows/cicd.yml` — én samlet pipeline med to jobs: `ci` (test + pip-audit + Docker build) og `cd` (publicer image til GitHub Packages). `cd` kører kun hvis `ci` er grøn (`needs: ci`) og kun på `main` eller manuel trigger.
 - Dockerfile med healthcheck mod `/ready`.
 - `/health` til simpel liveness.
 - `/ready` til database-readiness.
@@ -192,14 +215,13 @@ Hvis `SECRET_KEY` glemmes i test eller production, stopper appen med
 
 ## Deployment
 
-Repoet indeholder en CD-workflow, der bygger Docker-imaget og publicerer det til GitHub Packages / GitHub Container Registry:
+Repoet indeholder en samlet CI/CD-workflow, der tester, bygger og publicerer Docker-imaget til GitHub Packages / GitHub Container Registry:
 
 ```text
-.github/workflows/CD.yml
+.github/workflows/cicd.yml
 ```
 
-Workflowet kører ved push til `main` og kan også startes manuelt fra GitHub Actions.
-CI-workflowet tester appen og bygger Docker-imaget som validering. CD-workflowet publicerer Docker-imaget til:
+Workflowet kører ved push til alle branches og PRs (kun `ci`-jobbet), og udvider sig til også at køre `cd`-jobbet ved push til `main` eller manuel trigger fra GitHub Actions. `cd` afhænger af `ci` via `needs:` — er CI ikke grøn, sker der ingen publicering. CD-jobbet publicerer Docker-imaget til:
 
 ```text
 ghcr.io/<github-owner>/voltedge-mvp:latest

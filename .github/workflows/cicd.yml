@@ -1,0 +1,85 @@
+name: CI/CD
+
+# Een samlet pipeline med to jobs:
+#   1) ci  - tester, scanner og bygger Docker-image (koerer paa alle pushes + PRs)
+#   2) cd  - publicerer image til GitHub Container Registry
+#           (koerer KUN paa main eller manuelt, og kun hvis ci er groen via needs:)
+# Adskillelsen sikrer at CD ikke kan ske uden groen CI - dvs. der kommer aldrig
+# en defekt build i registry.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  ci:
+    name: CI - test og build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Sikkerhed: pip-audit slaar vores deps op i en database over kendte
+      # saarbarheder (PyPI Advisory DB). Hvis der findes en CVE i Flask,
+      # numpy eller scikit-learn, fejler bygget her - saa vi opdager det
+      # FOER koden kommer i production.
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          pip install pip-audit
+          pip-audit -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
+      - name: Build Docker image
+        run: docker build -t voltedge-mvp .
+
+  cd:
+    name: CD - publish container
+    runs-on: ubuntu-latest
+    # Afhaengigheden 'needs: ci' betyder at CD kun starter hvis CI er groen.
+    # 'if'-betingelsen begraenser CD til main-branch eller manuel trigger,
+    # saa feature-branches og PRs ikke utilsigtet publicerer images.
+    needs: ci
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Docker/GHCR kraever at image-navne er i lowercase. github.repository_owner
+      # giver "SebastianZiti" med store bogstaver, saa vi hardcoder den
+      # lowercase form her. Hvis vi skifter ejer en dag, skal denne linje
+      # opdateres.
+      - name: Build and publish Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/sebastianziti/voltedge-mvp:latest
+            ghcr.io/sebastianziti/voltedge-mvp:${{ github.sha }}
