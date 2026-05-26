@@ -1,0 +1,58 @@
+services:
+  app:
+    build:
+      context: .
+    image: voltedge-mvp:latest
+    container_name: voltedge-app
+    environment:
+      SERVICE_ENV: development
+      LOG_LEVEL: INFO
+      FLASK_DEBUG: "0"
+      SECRET_KEY: local-compose-change-before-production
+      DB_PATH: /data/voltedge.db
+    ports:
+      - "5001:5001"
+    volumes:
+      - voltedge_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5001/ready', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: voltedge-prometheus
+    depends_on:
+      app:
+        condition: service_healthy
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: voltedge-grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+
+volumes:
+  voltedge_data:
+  prometheus_data:
+  grafana_data:
