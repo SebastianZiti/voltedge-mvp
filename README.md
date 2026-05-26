@@ -17,10 +17,18 @@ ladesessioner, domain events, KPI'er, forecast og Power BI API-data hænger samm
 
 ## Start lokalt
 
+Enkleste vej — kør hele stakken (app + Prometheus + Grafana) med Docker Compose:
+
 ```bash
-cd "/Users/sebastian/Desktop/Eksamens MVP/voltedge_mvp"
-python3 -m venv .venv
-source .venv/bin/activate
+docker compose up --build
+```
+
+Eller kør kun appen direkte med Python:
+
+```bash
+cd voltedge_mvp
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 python app.py
 ```
@@ -28,7 +36,9 @@ python app.py
 Åbn:
 
 ```text
-http://127.0.0.1:5001
+http://127.0.0.1:5001        # webapp
+http://127.0.0.1:9090        # Prometheus (kun via docker compose)
+http://127.0.0.1:3000        # Grafana   (kun via docker compose; admin/admin)
 ```
 
 ## Miljøvariabler (`.env.example`)

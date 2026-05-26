@@ -58,20 +58,30 @@ flowchart TD
     AK --> H
 
     T --> AL["Generate demo sessions"]
-    AL --> AM["POST /sessions/seed-demo"]
+    AL --> AM["POST /sessions/seed-demo<br/>(blokeret 404 i production)"]
     AM --> AN["services.seed_demo_sessions()"]
-    AN --> AO["Opretter demo sessions<br/>på flere chargers"]
+    AN --> ANC{"Findes denne demo-session<br/>allerede? (idempotency)"}
+    ANC -->|"Nej"| AO["Opretter demo sessions<br/>på flere chargers"]
+    ANC -->|"Ja"| ANS["Springer INSERT over"]
     AO --> AP["Gemmer SessionEnded events"]
     AP --> H
+    ANS --> H
 
     I --> AQ["Gå til Analytics"]
     AQ --> AR["GET /analytics"]
     AR --> AS["services.calculate_kpis()"]
-    AR --> AT["services.forecast_next_hour()"]
+    AR --> AT["services.forecast_load_next_hour()<br/>(sklearn LinearRegression eller<br/>MeanBaseline fallback)"]
+    AR --> ATD["services.diagnose_incidents_by_charger()<br/>(diagnostisk domain service)"]
     AS --> H
-    AT --> AU["Gemmer DomainEvent<br/>LoadForecastCalculated"]
-    AU --> H
-    H --> AV["Analytics-side viser KPI'er<br/>og forecast"]
+    AT --> H
+    ATD --> H
+    H --> AV["Analytics-side viser KPI'er,<br/>forecast (model, R², samples)<br/>og diagnostics-tabel"]
+
+    I --> APUB["Publicer forecast som event"]
+    APUB --> APUBM["POST /api/analytics/forecast/publish"]
+    APUBM --> APUBS["services.publish_forecast_next_hour()<br/>(eneste sted forecast skriver til DB —<br/>CQRS: GET er pure queries)"]
+    APUBS --> APUBE["Gemmer DomainEvent<br/>LoadForecastCalculated"]
+    APUBE --> H
 
     I --> AW["Power BI Desktop henter data"]
     AW --> AX["GET /api/powerbi/report-data"]
@@ -93,7 +103,42 @@ Et centralt eksempel er start af en session:
 3. `services.py` finder en charger i databasen.
 4. Chargeren laves til et `Charger`-domæneobjekt.
 5. `Charger.can_start_session()` tjekker om den må starte en session.
-6. Hvis ja, oprettes en `ChargingSession`.
+6. Hvis ja, oprettes en `ChargingSession` — alt inden for én `database.transaction()`-context manager.
 7. Sessionen gemmes i databasen.
-8. Chargeren sættes til `occupied`.
+8. Chargeren sættes til `occupied` via **atomic claim** (`UPDATE … WHERE status='available'`), så to samtidige requests ikke kan starte en session på samme charger.
 9. Der gemmes et domain event: `SessionStarted`.
+
+## CI/CD-flow (DevSecOps)
+
+```mermaid
+flowchart LR
+    DEV["Sebas pusher kode"] --> GH["GitHub modtager push"]
+    GH --> CI["Job: ci"]
+    CI --> CIT["Tests<br/>python -m unittest"]
+    CI --> CIA["Sikkerhed:<br/>pip-audit<br/>(CVE-scan)"]
+    CI --> CIB["Build Docker image"]
+    CIT --> CIG{"Alt grønt?"}
+    CIA --> CIG
+    CIB --> CIG
+    CIG -->|"Nej"| FAIL["Workflow fejler<br/>(ingen publish)"]
+    CIG -->|"Ja, og main-branch"| CD["Job: cd<br/>(needs: ci)"]
+    CD --> CDL["Log ind på GHCR"]
+    CDL --> CDB["Build + push image<br/>med OCI source label"]
+    CDB --> REG["ghcr.io/sebastianziti/<br/>voltedge-mvp:latest +<br/>:&lt;commit-sha&gt;"]
+    REG --> ROLL["Rollback-mulighed:<br/>deploy en tidligere SHA"]
+```
+
+## Observability-flow (runtime)
+
+```mermaid
+flowchart LR
+    APP["Flask app.py"] --> METRIC["GET /metrics endpoint"]
+    APP --> HOOK["after_request hook<br/>(observability.py)"]
+    HOOK --> RECORD["Optæller HTTP requests<br/>+ latency histogram"]
+    DB["database.py"] --> DBREC["Optæller DB queries<br/>+ latency histogram"]
+    METRIC --> PROM["Prometheus scraper<br/>(hvert 10. sekund)"]
+    RECORD --> METRIC
+    DBREC --> METRIC
+    PROM --> TSDB["Prometheus TSDB"]
+    TSDB --> GRAF["Grafana dashboard<br/>(VoltEdge-overview)"]
+```

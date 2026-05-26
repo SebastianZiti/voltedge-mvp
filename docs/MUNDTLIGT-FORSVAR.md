@@ -3,6 +3,23 @@
 Cheat sheet til mundtlig eksamen. Læs igennem 2-3 gange.
 Hvert afsnit kan stå alene — du behøver ikke huske detaljerne, kun det centrale ord-for-ord.
 
+## 🟢 Status
+
+| Område | Status |
+|---|---|
+| DDD-mapping (entities, value objects, domain events, domain services) | ✅ Implementeret + dokumenteret i `ARCHITECTURE.md` |
+| Machine Learning som domain service (`forecast_load_next_hour`) | ✅ sklearn LinearRegression med R²-score |
+| Deskriptive + diagnostiske + predictive analyser | ✅ `calculate_kpis`, `diagnose_incidents_by_charger`, `forecast_load_next_hour` |
+| Tests | ✅ 33/33 grønne |
+| Sikkerhedshærdning | ✅ USER i Docker, /ready info-leak, SECRET_KEY hard-fail (m. loophole-fix), seed-demo gate |
+| CI/CD | ✅ Samlet i `cicd.yml`, CD via `needs: ci`, pip-audit indbygget |
+| Docker image i registry | ✅ `ghcr.io/sebastianziti/voltedge-mvp:latest` + SHA-tags |
+| Rollback-strategi | ✅ Via uforanderlige SHA-tags, dokumenteret i `README.md` |
+| Public GitHub repo | ✅ https://github.com/SebastianZiti/voltedge-mvp |
+| Video demo | ⏳ Laver du selv |
+
+**Hvis censor spørger "har I deployet?"** → svar: *"Ja, hver godkendt commit på main bygger og publicerer automatisk et Docker-image til GitHub Container Registry via vores CI/CD-pipeline."*
+
 ---
 
 ## 1) "Forklar Domain Driven Design i jeres MVP"
@@ -240,7 +257,7 @@ r2 = float(model.score(X, y))        # kvalitets-score
 ## 9) "Hvordan opdager I sårbarheder i jeres afhængigheder?"
 
 > Vi har tilføjet **`pip-audit`** som et step i vores CI-pipeline
-> (`.github/workflows/ci.yml`). Hver gang nogen pusher kode, slår GitHub alle vores
+> (`.github/workflows/cicd.yml` — `ci`-jobbet). Hver gang nogen pusher kode, slår GitHub alle vores
 > Python-afhængigheder op i en offentlig database over kendte sårbarheder (PyPI Advisory
 > DB / CVE-lister). Hvis der findes en sårbarhed, **fejler bygget** — så vi opdager det
 > *før* koden går i production.
@@ -255,7 +272,7 @@ r2 = float(model.score(X, y))        # kvalitets-score
 > automatiske PR'er med opdateringer. Vi valgte pip-audit fordi det er enkelt at
 > integrere i CI med én linje, og vi kan forklare præcis hvad det gør.*
 
-**Konkret kode at pege på** (`.github/workflows/ci.yml`):
+**Konkret kode at pege på** (`.github/workflows/cicd.yml`, `ci`-jobbet):
 ```yaml
 - name: Audit dependencies for known vulnerabilities
   run: |
