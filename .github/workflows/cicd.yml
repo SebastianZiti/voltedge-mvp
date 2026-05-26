@@ -75,11 +75,20 @@ jobs:
       # giver "SebastianZiti" med store bogstaver, saa vi hardcoder den
       # lowercase form her. Hvis vi skifter ejer en dag, skal denne linje
       # opdateres.
+      #
+      # OCI-label'en 'org.opencontainers.image.source' fortaeller GitHub
+      # hvilket repo der ejer pakken. Uden den vises pakken som "uafhaengig"
+      # paa brugerens profil og bliver ikke automatisk linket til repoet -
+      # derfor vises den heller ikke korrekt under github.com/<user>?tab=packages.
       - name: Build and publish Docker image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence
+            org.opencontainers.image.licenses=MIT
           tags: |
             ghcr.io/sebastianziti/voltedge-mvp:latest
             ghcr.io/sebastianziti/voltedge-mvp:${{ github.sha }}
