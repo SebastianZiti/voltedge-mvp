@@ -1,6 +1,9 @@
 import sqlite3
 from contextlib import closing, contextmanager
 from pathlib import Path
+from time import perf_counter
+
+import observability
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -86,21 +89,42 @@ def init_db(db_path=DEFAULT_DB_PATH):
 
 
 def query_all(sql, params=(), db_path=DEFAULT_DB_PATH):
-    with closing(get_connection(db_path)) as db:
-        return [dict(row) for row in db.execute(sql, params).fetchall()]
+    start = perf_counter()
+    try:
+        with closing(get_connection(db_path)) as db:
+            rows = [dict(row) for row in db.execute(sql, params).fetchall()]
+        observability.record_db_query("select_many", perf_counter() - start)
+        return rows
+    except Exception:
+        observability.record_db_query("select_many", perf_counter() - start, error=True)
+        raise
 
 
 def query_one(sql, params=(), db_path=DEFAULT_DB_PATH):
-    with closing(get_connection(db_path)) as db:
-        row = db.execute(sql, params).fetchone()
-        return dict(row) if row else None
+    start = perf_counter()
+    try:
+        with closing(get_connection(db_path)) as db:
+            row = db.execute(sql, params).fetchone()
+            result = dict(row) if row else None
+        observability.record_db_query("select_one", perf_counter() - start)
+        return result
+    except Exception:
+        observability.record_db_query("select_one", perf_counter() - start, error=True)
+        raise
 
 
 def execute(sql, params=(), db_path=DEFAULT_DB_PATH):
-    with closing(get_connection(db_path)) as db:
-        cursor = db.execute(sql, params)
-        db.commit()
-        return cursor.lastrowid
+    start = perf_counter()
+    try:
+        with closing(get_connection(db_path)) as db:
+            cursor = db.execute(sql, params)
+            db.commit()
+            lastrowid = cursor.lastrowid
+        observability.record_db_query("write", perf_counter() - start)
+        return lastrowid
+    except Exception:
+        observability.record_db_query("write", perf_counter() - start, error=True)
+        raise
 
 
 @contextmanager
@@ -111,12 +135,15 @@ def transaction(db_path=DEFAULT_DB_PATH):
     # Det sikrer aggregat-konsistens: enten gennemføres hele forretningshandlingen,
     # eller også sker der ingenting. Forhindrer "halv-skrevne" tilstande.
     db = get_connection(db_path)
+    start = perf_counter()
     try:
         db.execute("BEGIN IMMEDIATE")  # tager skrive-lås nu, så ingen andre kan skrive imens
         yield db
         db.commit()  # alt gik godt -> gem ændringer
+        observability.record_db_query("transaction", perf_counter() - start)
     except Exception:
         db.rollback()  # noget fejlede -> annullér alle ændringer
+        observability.record_db_query("transaction", perf_counter() - start, error=True)
         raise
     finally:
         db.close()

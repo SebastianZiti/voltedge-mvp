@@ -89,6 +89,18 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual({session["charger_id"] for session in sessions}, {"CH-001", "CH-002", "CH-003", "CH-004"})
         self.assertTrue(all(session["status"] == "completed" for session in sessions))
 
+    def test_seed_demo_sessions_is_idempotent(self):
+        # Hvis brugeren klikker "Generate demo sessions" to gange, maa det
+        # IKKE oprette dubletter. Foer fixet gav andet kald 9 ekstra rakker
+        # med samme charger/start_time, kun forskellig id.
+        first_call = services.seed_demo_sessions(self.db_path)
+        second_call = services.seed_demo_sessions(self.db_path)
+        sessions = services.list_sessions(self.db_path)
+
+        self.assertEqual(len(first_call), 9)
+        self.assertEqual(len(second_call), 0)
+        self.assertEqual(len(sessions), 9)
+
     def test_cannot_start_second_session_on_occupied_charger(self):
         first = services.start_session("CH-001", db_path=self.db_path)
         second = services.start_session("CH-001", db_path=self.db_path)
@@ -156,6 +168,40 @@ class ServiceTests(unittest.TestCase):
         forecast = LoadForecast(next_hour_kw=12.5, model="LinearRegression", sample_size=10)
         with self.assertRaises(FrozenInstanceError):
             forecast.model = "Tampered"
+
+    def test_diagnose_incidents_returns_all_chargers_with_zero_when_no_incidents(self):
+        diagnostics = services.diagnose_incidents_by_charger(self.db_path)
+
+        self.assertEqual(len(diagnostics), 4)
+        self.assertTrue(all(row["incident_count"] == 0 for row in diagnostics))
+        self.assertTrue(all(row["last_incident_at"] is None for row in diagnostics))
+
+    def test_diagnose_incidents_attributes_counts_to_correct_charger(self):
+        database.execute(
+            "INSERT INTO incidents (charger_id, description, severity, created_at) VALUES (?, ?, ?, ?)",
+            ("CH-002", "first fault", "high", "2026-05-20T10:00:00"),
+            db_path=self.db_path,
+        )
+        database.execute(
+            "INSERT INTO incidents (charger_id, description, severity, created_at) VALUES (?, ?, ?, ?)",
+            ("CH-002", "second fault", "high", "2026-05-21T10:00:00"),
+            db_path=self.db_path,
+        )
+        database.execute(
+            "INSERT INTO incidents (charger_id, description, severity, created_at) VALUES (?, ?, ?, ?)",
+            ("CH-003", "single fault", "medium", "2026-05-22T10:00:00"),
+            db_path=self.db_path,
+        )
+
+        diagnostics = services.diagnose_incidents_by_charger(self.db_path)
+        by_id = {row["charger_id"]: row for row in diagnostics}
+
+        self.assertEqual(by_id["CH-002"]["incident_count"], 2)
+        self.assertEqual(by_id["CH-002"]["last_description"], "second fault")
+        self.assertEqual(by_id["CH-003"]["incident_count"], 1)
+        self.assertEqual(by_id["CH-001"]["incident_count"], 0)
+        # Sorteret efter incident_count DESC, sa CH-002 skal vaere foerst.
+        self.assertEqual(diagnostics[0]["charger_id"], "CH-002")
 
     def test_transaction_rolls_back_on_error(self):
         sessions_before = len(services.list_sessions(self.db_path))

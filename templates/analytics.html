@@ -40,6 +40,39 @@
     </article>
 </section>
 
+<section class="panel">
+    <h3>Diagnostics — incidents per charger</h3>
+    <p>
+        Diagnostic domain service answering <em>why</em> uptime is not 100% by attributing
+        incidents to specific chargers. The descriptive KPIs above count incidents in total;
+        this view shows which chargers are responsible.
+    </p>
+    <table>
+        <thead>
+            <tr>
+                <th>Charger</th>
+                <th>Location</th>
+                <th>Status</th>
+                <th>Incidents</th>
+                <th>Last incident</th>
+                <th>Last description</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in diagnostics %}
+            <tr>
+                <td>{{ row.charger_id }}</td>
+                <td>{{ row.location }}</td>
+                <td>{{ row.status }}</td>
+                <td>{{ row.incident_count }}</td>
+                <td>{{ row.last_incident_at or "—" }}</td>
+                <td>{{ row.last_description or "—" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
 <section class="panel explanation">
     <h3>LoadForecast — domain service</h3>
     <p>

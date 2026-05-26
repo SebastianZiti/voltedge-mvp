@@ -233,6 +233,20 @@ def seed_demo_sessions(db_path=database.DEFAULT_DB_PATH):
             continue
         start_time = base_time - timedelta(hours=hours_ago)
         end_time = start_time + timedelta(minutes=duration_minutes)
+
+        # Idempotency-check: hvis en demo-session med samme charger og
+        # start_time allerede findes, springer vi INSERT over. Uden denne
+        # vagt ville hvert klik paa "Generate demo sessions"-knappen
+        # oprette identiske dubletter, fordi base_time rundes til hele
+        # timer og demo_plan er statisk.
+        existing = database.query_one(
+            "SELECT id FROM sessions WHERE charger_id = ? AND contract_id = ? AND start_time = ?",
+            (charger_id, DEMO_CONTRACT_ID, start_time.isoformat(timespec="seconds")),
+            db_path=db_path,
+        )
+        if existing is not None:
+            continue
+
         price_dkk = round(energy_kwh * PRICE_PER_KWH_DKK, 2)
 
         session_id = database.execute(
@@ -377,6 +391,35 @@ def publish_forecast_next_hour(db_path=database.DEFAULT_DB_PATH):
         db_path,
     )
     return forecast
+
+
+def diagnose_incidents_by_charger(db_path=database.DEFAULT_DB_PATH):
+    # Diagnostisk domain service: besvarer "HVORFOR er driften ikke 100%?" ved at
+    # bryde incidents ned per charger. Det er forskelligt fra deskriptiv analyse
+    # (som kun siger HVOR MANGE incidents der er) og predictive (som forudsiger
+    # belastning). LEFT JOIN sikrer at chargers UDEN incidents ogsa kommer med
+    # (med count = 0), sa man ser den fulde flade.
+    rows = database.query_all(
+        """
+        SELECT c.id AS charger_id,
+               c.location,
+               c.status,
+               COUNT(i.id) AS incident_count,
+               MAX(i.created_at) AS last_incident_at,
+               (
+                   SELECT description FROM incidents
+                   WHERE charger_id = c.id
+                   ORDER BY created_at DESC
+                   LIMIT 1
+               ) AS last_description
+        FROM chargers c
+        LEFT JOIN incidents i ON i.charger_id = c.id
+        GROUP BY c.id
+        ORDER BY incident_count DESC, c.id ASC
+        """,
+        db_path=db_path,
+    )
+    return [dict(row) for row in rows]
 
 
 def build_powerbi_report_rows(db_path=database.DEFAULT_DB_PATH):
