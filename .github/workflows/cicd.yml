@@ -80,6 +80,10 @@ jobs:
       # hvilket repo der ejer pakken. Uden den vises pakken som "uafhaengig"
       # paa brugerens profil og bliver ikke automatisk linket til repoet -
       # derfor vises den heller ikke korrekt under github.com/<user>?tab=packages.
+      # VIGTIGT: 'labels:' sættes i image-config (synlige via docker inspect),
+      # men GHCR's pakke-beskrivelse laeses fra MANIFEST-annotations.
+      # 'annotations:' med 'index:'-prefix saetter dem paa manifest-index,
+      # som er det GHCR's UI viser under pakkenavnet.
       - name: Build and publish Docker image
         uses: docker/build-push-action@v6
         with:
@@ -87,8 +91,12 @@ jobs:
           push: true
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence
+            org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence (Flask + SQLite + sklearn + Prometheus/Grafana). Eksamens-MVP for 6. semester.
             org.opencontainers.image.licenses=MIT
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence (Flask + SQLite + sklearn + Prometheus/Grafana). Eksamens-MVP for 6. semester.
+            index:org.opencontainers.image.licenses=MIT
           tags: |
             ghcr.io/sebastianziti/voltedge-mvp:latest
             ghcr.io/sebastianziti/voltedge-mvp:${{ github.sha }}
