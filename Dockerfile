@@ -1,5 +1,13 @@
 FROM python:3.12-slim
 
+# OCI-labels - GHCR laeser disse for at vise beskrivelse, repo-link og
+# licens paa pakke-siden. 'image.source' kobler pakken til repoet
+# (vises som "from voltedge-mvp" paa GitHub), 'image.description' vises
+# under pakkenavnet i UI'en.
+LABEL org.opencontainers.image.source="https://github.com/SebastianZiti/voltedge-mvp"
+LABEL org.opencontainers.image.description="VoltEdge MVP - Smart Charging Operations Intelligence (Flask + SQLite + sklearn + Prometheus/Grafana). Eksamens-MVP for 6. semester."
+LABEL org.opencontainers.image.licenses="MIT"
+
 WORKDIR /app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
