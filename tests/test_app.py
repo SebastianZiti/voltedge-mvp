@@ -50,6 +50,20 @@ class AppTests(unittest.TestCase):
         self.assertGreaterEqual(len(response.json), 4)
         self.assertEqual(response.json[0]["dataset"], "charger")
 
+    def test_metrics_endpoint_exposes_prometheus_metrics(self):
+        self.client.get("/health")
+        self.client.get("/api/chargers")
+        response = self.client.get("/metrics")
+        body = response.get_data(as_text=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/plain", response.content_type)
+        self.assertIn("# TYPE flask_http_request_total counter", body)
+        self.assertIn('flask_http_request_total{method="GET",path="/health",status="200"}', body)
+        self.assertIn("flask_http_request_duration_seconds_bucket", body)
+        self.assertIn("voltedge_db_queries_total", body)
+        self.assertIn("voltedge_db_query_duration_seconds_bucket", body)
+
     def test_csv_download_routes_are_not_public(self):
         latest_report = self.client.get("/export/latest_report.csv")
         telemetry_export = self.client.get("/export/telemetry.csv")
@@ -89,6 +103,22 @@ class SecretKeyHardeningTests(unittest.TestCase):
         with mock.patch.dict(
             os.environ,
             {"SERVICE_ENV": "production", "SECRET_KEY": "dev-only-change-me"},
+            clear=False,
+        ):
+            with self.assertRaises(RuntimeError):
+                create_app(self.db_path)
+
+    def test_production_with_compose_placeholder_secret_key_raises(self):
+        # Loophole-check: docker-compose.yml har en anden placeholder-streng
+        # end app.py's DEFAULT_DEV_SECRET_KEY. Hvis nogen aendrer
+        # SERVICE_ENV til production i compose uden ogsaa at overskrive
+        # SECRET_KEY, skal appen stadig naegte at starte.
+        with mock.patch.dict(
+            os.environ,
+            {
+                "SERVICE_ENV": "production",
+                "SECRET_KEY": "local-compose-change-before-production",
+            },
             clear=False,
         ):
             with self.assertRaises(RuntimeError):

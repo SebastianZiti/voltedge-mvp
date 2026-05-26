@@ -1,17 +1,33 @@
 import logging
 import os
+import time
+from pathlib import Path
 
-from flask import jsonify, Flask, redirect, render_template, request, url_for
+from flask import g, jsonify, Flask, redirect, render_template, request, Response, url_for
 
 import database
+import observability
 import services
 
 
 DEFAULT_DEV_SECRET_KEY = "dev-only-change-me"
 
+# Placeholder-noegler vi NAEGTER at koere med udenfor 'development'.
+# Inkluderer app-default'en OG docker-compose-default'en, saa appen ikke
+# starter i production/test hvis nogen blot satte SERVICE_ENV=production
+# men glemte at overskrive SECRET_KEY i compose-filen. Skal udvides hvis
+# nye placeholder-strenge introduceres andre steder i repoet.
+KNOWN_PLACEHOLDER_SECRET_KEYS = frozenset({
+    DEFAULT_DEV_SECRET_KEY,
+    "local-compose-change-before-production",
+})
 
-def create_app(db_path=database.DEFAULT_DB_PATH):
+
+def create_app(db_path=None):
+    observability.reset_metrics()
     app = Flask(__name__)
+    if db_path is None:
+        db_path = Path(os.getenv("DB_PATH", database.DEFAULT_DB_PATH))
     app.config["DB_PATH"] = db_path
     service_env = os.getenv("SERVICE_ENV", "development")
     app.config["SERVICE_ENV"] = service_env
@@ -22,7 +38,7 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
     # at bruge den offentligt kendte default-nøgle (som ville være sårbar).
     secret_key = os.getenv("SECRET_KEY")
     if service_env != "development":
-        if not secret_key or secret_key == DEFAULT_DEV_SECRET_KEY:
+        if not secret_key or secret_key in KNOWN_PLACEHOLDER_SECRET_KEYS:
             raise RuntimeError(
                 "SECRET_KEY skal sættes til en stærk værdi udenfor 'development'. "
                 "Sæt miljøvariablen SECRET_KEY før appen startes."
@@ -34,6 +50,17 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
 
     def db_path_from_config():
         return app.config["DB_PATH"]
+
+    @app.before_request
+    def start_request_timer():
+        g.request_start_time = time.perf_counter()
+
+    @app.after_request
+    def record_observability_metrics(response):
+        duration = time.perf_counter() - getattr(g, "request_start_time", time.perf_counter())
+        route = request.url_rule.rule if request.url_rule else request.path
+        observability.record_http_request(request.method, route, response.status_code, duration)
+        return response
 
     @app.after_request
     def add_security_headers(response):
@@ -90,6 +117,7 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
             "analytics.html",
             kpis=services.calculate_kpis(db_path_from_config()),
             forecast=services.forecast_load_next_hour(db_path_from_config()).to_record(),
+            diagnostics=services.diagnose_incidents_by_charger(db_path_from_config()),
         )
 
     @app.post("/simulate")
@@ -137,6 +165,18 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
             return jsonify({"status": "not_ready"}), 503
         return jsonify({"status": "ready", "service": "voltedge-mvp", "environment": app.config["SERVICE_ENV"]})
 
+    @app.get("/metrics")
+    def metrics():
+        db_ready = True
+        try:
+            database.query_one("SELECT COUNT(*) AS count FROM chargers", db_path=db_path_from_config())
+        except Exception:
+            db_ready = False
+        return Response(
+            observability.render_prometheus_metrics(db_path_from_config(), db_ready),
+            mimetype="text/plain; version=0.0.4; charset=utf-8",
+        )
+
     @app.get("/api/chargers")
     def api_chargers():
         return jsonify(services.list_chargers(db_path_from_config()))
@@ -177,6 +217,11 @@ def create_app(db_path=database.DEFAULT_DB_PATH):
     @app.get("/api/analytics/forecast")
     def api_forecast():
         return jsonify(services.forecast_load_next_hour(db_path_from_config()).to_record())
+
+    @app.get("/api/analytics/diagnostics")
+    def api_diagnostics():
+        # Diagnostisk endpoint: per-charger incident-nedbrydning.
+        return jsonify(services.diagnose_incidents_by_charger(db_path_from_config()))
 
     @app.post("/api/analytics/forecast/publish")
     def api_publish_forecast():

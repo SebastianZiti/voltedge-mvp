@@ -1,9 +1,12 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-ENV SERVICE_ENV=container
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV SERVICE_ENV=production
 ENV LOG_LEVEL=INFO
 ENV FLASK_DEBUG=0
+ENV DB_PATH=/data/voltedge.db
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -14,7 +17,8 @@ COPY . .
 # Hvis en angriber bryder ind via appen, har de KUN denne brugers rettigheder
 # inde i containeren — ikke root. Det er en "defense in depth"-foranstaltning.
 RUN useradd --create-home --shell /bin/bash appuser \
- && chown -R appuser:appuser /app
+ && mkdir -p /data \
+ && chown -R appuser:appuser /app /data
 USER appuser
 
 EXPOSE 5001
