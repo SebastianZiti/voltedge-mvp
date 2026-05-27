@@ -169,7 +169,8 @@ GET  /api/powerbi/report-data
 - Bounded context: Charging Operations Intelligence.
 - Entities: `Charger`, `ChargingSession`, `TelemetryReading`, `Incident`.
 - Value objects: `PowerKw`, `EnergyKwh`, `MoneyDkk`, `ChargerStatus`, `SessionStatus`, `LoadForecast` (frozen).
-- Domain events: `TelemetryReceived`, `ChargerStatusChanged`, `SessionStarted`, `SessionEnded`, `IncidentOpened`, `LoadForecastCalculated`.
+- Domain events: `ChargerStatusChanged`, `SessionStarted`, `SessionEnded`, `IncidentOpened`, `LoadForecastCalculated`.
+- Integration event: `TelemetryReceived` (signal fra OCPP-konteksten — gemmes i samme tabel for enkelhed, men er begrebsmæssigt en teknisk hændelse, ikke en forretningsbeslutning).
 - Domain services (analytics-trioen):
   - Deskriptiv: `calculate_kpis` (KPI'er, uptime, peak load).
   - Diagnostisk: `diagnose_incidents_by_charger` (per-charger incident-nedbrydning).

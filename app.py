@@ -242,8 +242,8 @@ def create_app(db_path=None):
     return app
 
 
-app = create_app()
-
-
 if __name__ == "__main__":
+    # Vi opretter foerst app-objektet naar filen koeres direkte (python app.py).
+    # Saa undgaar tests at trigge create_app() (og DB-init) ved import.
+    app = create_app()
     app.run(host="0.0.0.0", port=5001, debug=os.getenv("FLASK_DEBUG", "0") == "1")

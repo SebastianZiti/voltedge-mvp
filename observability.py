@@ -45,18 +45,17 @@ def record_http_request(method, path, status, duration_seconds):
 
 
 def record_db_query(operation, duration_seconds, error=False):
-    op = operation.lower()
     duration = max(float(duration_seconds), 0.0)
     with _lock:
-        _db_queries[op] += 1
+        _db_queries[operation] += 1
         if error:
-            _db_errors[op] += 1
-        _db_duration_sum[op] += duration
-        _db_duration_count[op] += 1
+            _db_errors[operation] += 1
+        _db_duration_sum[operation] += duration
+        _db_duration_count[operation] += 1
         for bucket in DB_DURATION_BUCKETS:
             if duration <= bucket:
-                _db_duration_buckets[op][bucket] += 1
-        _db_duration_buckets[op][float("inf")] += 1
+                _db_duration_buckets[operation][bucket] += 1
+        _db_duration_buckets[operation][float("inf")] += 1
 
 
 def render_prometheus_metrics(db_path, db_ready):

@@ -24,7 +24,7 @@ flowchart TD
     K --> L["services.simulate_telemetry()"]
     L --> M["Opretter TelemetryReading"]
     M --> N["Opdaterer Charger status"]
-    N --> O["Gemmer DomainEvent<br/>TelemetryReceived / ChargerStatusChanged"]
+    N --> O["Gemmer event i domain_events-tabel<br/>TelemetryReceived (integration event)<br/>ChargerStatusChanged (domain event)"]
     O --> H
     H --> C
 
