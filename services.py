@@ -5,6 +5,7 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 
 import database
+import price_service
 from domain import (
     Charger,
     ChargerStatus,
@@ -20,7 +21,6 @@ from domain import (
 )
 
 
-PRICE_PER_KWH_DKK = 3.25
 DEMO_CONTRACT_ID = "CONTRACT-DEMO"
 FORECAST_MIN_SAMPLES = 5
 FORECAST_GROWTH_FACTOR = 1.08
@@ -186,7 +186,17 @@ def end_latest_session(db_path=database.DEFAULT_DB_PATH):
             return None
 
         session = _session_from_row(row)
-        completed = session.complete(now, EnergyKwh(round(random.uniform(8, 38), 2)), PRICE_PER_KWH_DKK)
+
+        # Hent aktuel el-pris for chargerens region (Koebenhavn=DK2, resten=DK1).
+        # Hvis API'et er nede, falder price_service tilbage til en konstant - saa
+        # session-afslutningen virker stadig selv uden internet.
+        charger_row = db.execute(
+            "SELECT location FROM chargers WHERE id = ?", (session.charger_id,)
+        ).fetchone()
+        region = price_service.get_region_for_location(charger_row["location"]) if charger_row else price_service.DEFAULT_REGION
+        price_per_kwh = price_service.get_price_per_kwh(region, now)
+
+        completed = session.complete(now, EnergyKwh(round(random.uniform(8, 38), 2)), price_per_kwh)
         record = completed.to_record()
 
         db.execute(
@@ -227,9 +237,9 @@ def seed_demo_sessions(db_path=database.DEFAULT_DB_PATH):
     ]
     created = []
 
-    charger_ids = {charger.id for charger in chargers}
+    chargers_by_id = {charger.id: charger for charger in chargers}
     for charger_id, duration_minutes, energy_kwh, hours_ago in demo_plan:
-        if charger_id not in charger_ids:
+        if charger_id not in chargers_by_id:
             continue
         start_time = base_time - timedelta(hours=hours_ago)
         end_time = start_time + timedelta(minutes=duration_minutes)
@@ -247,33 +257,41 @@ def seed_demo_sessions(db_path=database.DEFAULT_DB_PATH):
         if existing is not None:
             continue
 
-        price_dkk = round(energy_kwh * PRICE_PER_KWH_DKK, 2)
+        # Hent historisk pris for den time sessionen sluttede.
+        # API'et returnerer hele dagens 24 timer, og price_service finder den rigtige.
+        region = price_service.get_region_for_location(chargers_by_id[charger_id].location)
+        price_per_kwh = price_service.get_price_per_kwh(region, end_time)
+        price_dkk = round(energy_kwh * price_per_kwh, 2)
 
-        session_id = database.execute(
-            """
-            INSERT INTO sessions (charger_id, contract_id, start_time, end_time, energy_kwh, price_dkk, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                charger_id,
-                DEMO_CONTRACT_ID,
-                start_time.isoformat(timespec="seconds"),
-                end_time.isoformat(timespec="seconds"),
-                energy_kwh,
-                price_dkk,
-                SessionStatus.COMPLETED.value,
-            ),
-            db_path=db_path,
-        )
-        _record_domain_event(
-            DomainEvent(
-                "SessionEnded",
-                str(session_id),
-                f"Demo session {session_id} ended with {energy_kwh} kWh",
-                end_time,
-            ),
-            db_path,
-        )
+        # Transaction sikrer at session OG dens domain event gemmes sammen.
+        # Hvis processen doer mellem de to INSERTs, rulles begge tilbage,
+        # saa vi aldrig ender med en session uden tilhoerende SessionEnded-event.
+        with database.transaction(db_path) as db:
+            cursor = db.execute(
+                """
+                INSERT INTO sessions (charger_id, contract_id, start_time, end_time, energy_kwh, price_dkk, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    charger_id,
+                    DEMO_CONTRACT_ID,
+                    start_time.isoformat(timespec="seconds"),
+                    end_time.isoformat(timespec="seconds"),
+                    energy_kwh,
+                    price_dkk,
+                    SessionStatus.COMPLETED.value,
+                ),
+            )
+            session_id = cursor.lastrowid
+            db.execute(
+                "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
+                (
+                    "SessionEnded",
+                    str(session_id),
+                    f"Demo session {session_id} ended with {energy_kwh} kWh",
+                    end_time.isoformat(timespec="seconds"),
+                ),
+            )
         created.append({"id": session_id, "charger_id": charger_id, "energy_kwh": energy_kwh, "price_dkk": price_dkk})
 
     return created
@@ -300,7 +318,9 @@ def calculate_kpis(db_path=database.DEFAULT_DB_PATH):
         "incident_count": len(incidents),
         "uptime_percent": uptime_percent,
         "peak_load_kw": round(peak_load_kw, 2),
-        "forecast_next_hour_kw": forecast_next_hour(db_path),
+        # KPI-feltet bruger ML-domain-servicen (samme tal som Analytics-siden),
+        # saa dashboard, KPI-API og PowerBI-summary aldrig viser forskellige forecasts.
+        "forecast_next_hour_kw": forecast_load_next_hour(db_path).next_hour_kw,
     }
 
 
@@ -316,7 +336,7 @@ def forecast_next_hour(db_path=database.DEFAULT_DB_PATH):
         db_path=db_path,
     )
     if not rows:
-        return 0
+        return 0.0
     average_load = sum(float(row["power_kw"]) for row in rows) / len(rows)
     return round(average_load * FORECAST_GROWTH_FACTOR, 2)
 
@@ -526,20 +546,16 @@ def build_powerbi_summary(db_path=database.DEFAULT_DB_PATH):
     }
 
 
-def _record_event(event_name, entity_id, description, created_at, db_path):
+def _record_domain_event(event, db_path):
+    record = event.to_record()
     database.execute(
         """
         INSERT INTO domain_events (event_name, entity_id, description, created_at)
         VALUES (?, ?, ?, ?)
         """,
-        (event_name, entity_id, description, created_at),
+        (record["event_name"], record["entity_id"], record["description"], record["created_at"]),
         db_path=db_path,
     )
-
-
-def _record_domain_event(event, db_path):
-    record = event.to_record()
-    _record_event(record["event_name"], record["entity_id"], record["description"], record["created_at"], db_path)
 
 
 def _charger_from_row(row):

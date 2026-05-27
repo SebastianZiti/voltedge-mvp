@@ -1,8 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import database
+import price_service
 import services
 
 
@@ -12,7 +14,17 @@ class ServiceTests(unittest.TestCase):
         self.db_path = Path(self.temp_dir.name) / "test.db"
         database.init_db(self.db_path)
 
+        # Forhindre at tests rammer den rigtige el-pris-API (elprisenligenu.dk).
+        # Vi tvinger fallback-prisen (3.25) saa testene er deterministiske og virker offline.
+        self._price_patcher = mock.patch(
+            "price_service._fetch_prices",
+            side_effect=ConnectionError("test environment - no real API call"),
+        )
+        self._price_patcher.start()
+        price_service.reset_cache()
+
     def tearDown(self):
+        self._price_patcher.stop()
         self.temp_dir.cleanup()
 
     def test_database_starts_with_demo_chargers(self):

@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import price_service
 from app import create_app
 
 
@@ -14,7 +15,16 @@ class AppTests(unittest.TestCase):
         self.app = create_app(self.db_path)
         self.client = self.app.test_client()
 
+        # Forhindre at integrationstests rammer den rigtige el-pris-API.
+        self._price_patcher = mock.patch(
+            "price_service._fetch_prices",
+            side_effect=ConnectionError("test environment - no real API call"),
+        )
+        self._price_patcher.start()
+        price_service.reset_cache()
+
     def tearDown(self):
+        self._price_patcher.stop()
         self.temp_dir.cleanup()
 
     def test_ready_endpoint_checks_database(self):
