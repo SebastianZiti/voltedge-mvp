@@ -10,7 +10,8 @@ Hvert afsnit kan stå alene — du behøver ikke huske detaljerne, kun det centr
 | DDD-mapping (entities, value objects, domain events, domain services) | ✅ Implementeret + dokumenteret i `ARCHITECTURE.md` |
 | Machine Learning som domain service (`forecast_load_next_hour`) | ✅ sklearn LinearRegression med R²-score |
 | Deskriptive + diagnostiske + predictive analyser | ✅ `calculate_kpis`, `diagnose_incidents_by_charger`, `forecast_load_next_hour` |
-| Tests | ✅ 33/33 grønne |
+| Realtids el-pris-integration (`price_service`) | ✅ elprisenligenu.dk, regionsopdelt DK1/DK2, fallback + cache |
+| Tests | ✅ 41/41 grønne |
 | Sikkerhedshærdning | ✅ USER i Docker, /ready info-leak, SECRET_KEY hard-fail (m. loophole-fix), seed-demo gate |
 | CI/CD | ✅ Samlet i `cicd.yml`, CD via `needs: ci`, pip-audit indbygget |
 | Docker image i registry | ✅ `ghcr.io/sebastianziti/voltedge-mvp:latest` + SHA-tags |
@@ -659,6 +660,66 @@ og asserter `RuntimeError`. Den ville være failet før fixet.
 > forklare og test. Placeholder-strengen er en bevidst valgt 'her er
 > jeg, og jeg er ikke en rigtig nøgle' — kombineret med hard-fail udenfor
 > dev-miljøet."*
+
+---
+
+## 14) "Forklar jeres el-pris-integration"
+
+> Vi henter aktuelle danske spot-priser i realtid fra **elprisenligenu.dk**'s
+> offentlige REST-API. Tidligere havde vi en hardcoded konstant på 3.25 DKK/kWh,
+> men det er ikke realistisk — den danske spot-pris varierer fra **negative tal
+> midt på dagen** (når solceller producerer overskud) til **over 2 DKK/kWh i
+> aften-spidsen** (når alle laver mad).
+>
+> Integrationen ligger i `price_service.py` — en separat fil i infrastructure
+> layer, fordi det er kode der taler med et eksternt system. Den kaldes fra
+> `services.py` når en session afsluttes, så prisen reflekterer markedet på
+> det tidspunkt sessionen sluttede.
+>
+> Vi har bygget tre vigtige beskyttelser ind:
+>
+> 1. **Region per charger** — København er DK2 (øst), Aarhus/Odense/Aalborg er
+>    DK1 (vest). Storebælt deler Danmark i to el-prisområder, og det matcher
+>    vores løsning.
+> 2. **Cache pr. (dato, region)** — vi rammer kun API'et én gang per dag per
+>    region. Resten af dagens sessioner bruger den cachede pris-tabel.
+> 3. **Fallback til 3.25 DKK** — hvis API'et er nede (fx ingen internet under
+>    demo), logger vi en warning og bruger konstanten. MVP'en virker stadig.
+>
+> Vi lægger 25% dansk moms oven på spot-prisen, så tallet matcher hvad en
+> EV-ejer faktisk betaler.
+
+**Hvis censor spørger:** "Hvorfor er prisen 0 kr midt på dagen?"
+
+> *Det er et reelt dansk fænomen. Når solceller producerer mere end forbruget,
+> kan den danske spot-pris blive **negativ** — bogstaveligt talt under 0 DKK/kWh.
+> Det forekommer regelmæssigt i 2026. Vi har valgt at floore til 0 i
+> `price_service.py` fordi vi ikke modellerer "appen betaler kunden for at lade"
+> i denne MVP. Men det er en god demo-pointe at man kan se det live i tallene.*
+
+**Hvis censor spørger:** "Hvad sker der hvis API'et er nede?"
+
+> *Så fanger vi fejlen i `price_service.get_price_per_kwh()` med en bred
+> `except (OSError, ValueError, KeyError)` — det dækker netværk, JSON-parsing
+> og uventet struktur. Vi logger en warning og returnerer
+> `FALLBACK_PRICE_PER_KWH_DKK = 3.25`. Det betyder MVP'en aldrig fejler bare
+> fordi en ekstern service er nede. Det er **defense in depth** for et eksternt
+> integrations-punkt.*
+
+**Hvis censor spørger:** "Hvorfor lige `elprisenligenu.dk` og ikke fx Nord Pool direkte?"
+
+> *Nord Pool kræver licens og API-nøgle. `elprisenligenu.dk` aggregerer Nord
+> Pool-data og udstiller dem som et åbent JSON-API uden registrering. For en
+> eksamens-MVP er det det rigtige niveau af ambition — vi viser at vi kan
+> integrere mod en ekstern context med fejlhåndtering og caching, uden at
+> håndtere kommerciel kontraktlogik.*
+
+**Hvis censor spørger:** "Hvor i Bounded Context Map'et passer det her?"
+
+> *Som en **ny upstream-context** ved siden af OCPP. Begge leverer data ind
+> til vores Charging Operations Intelligence-context: OCPP sender telemetri,
+> elprisenligenu.dk sender spot-priser. Vi er downstream-consumer af begge,
+> og kan ikke ændre deres API — derfor er vores fallback-strategi vigtig.*
 
 ---
 

@@ -34,19 +34,18 @@ shows the relationships using DDD terminology (U = upstream / supplier,
 D = downstream / consumer, ACL = anti-corruption layer):
 
 ```text
-            +-----------------------+
-            |   OCPP Adapters       |
-            |   (charger hardware)  |
-            +----------+------------+
-                       | U  (upstream — pushes telemetry)
-                       v D
-       +----------------------------------+        U   +---------------------+
-       |                                  |----------->|     Power BI        |
-       |   Charging Operations            |   (ACL via |   (analytics /      |
-       |   Intelligence  (MVP)            |    JSON    |    reporting)       |
-       |                                  |    API)    +---------------------+
-       +---+--------------+---------------+
-           | D            | D
+   +-----------------------+         +-------------------------+
+   |   OCPP Adapters       |         |   elprisenligenu.dk     |
+   |   (charger hardware)  |         |   (external price API)  |
+   +----------+------------+         +------------+------------+
+              | U  (telemetry)                    | U  (spot price per hour)
+              v D                                 v D
+       +----------------------------------------------+    U   +-----------------+
+       |                                              |------>|   Power BI      |
+       |   Charging Operations Intelligence (MVP)     |  (ACL |  (analytics /   |
+       |                                              |   via |   reporting)    |
+       +---+--------------+---------------------------+   JSON +-----------------+
+           | D            | D                              API)
            v U            v U
    +---------------+   +-----------------------+
    |   Billing &   |   |  Partner Onboarding   |
@@ -60,6 +59,11 @@ Legend:
   telemetry, sessions, incidents, domain events, KPIs and load forecasts.
 - **OCPP Adapters** is the upstream supplier of raw telemetry. In the MVP this
   is simulated via `services.simulate_telemetry`.
+- **elprisenligenu.dk** is a second upstream supplier — it provides hourly
+  Danish spot prices per region (DK1 / DK2). The MVP consumes the public
+  REST API via `price_service.py` when a charging session ends, so session
+  prices reflect real market data. A fallback constant (3.25 DKK/kWh)
+  protects the MVP if the API is unreachable.
 - **Billing & Settlement** and **Partner Onboarding & Roaming** are downstream
   consumers of session data. They are deliberately out of MVP scope.
 - **Power BI** consumes operational data via the `/api/powerbi/*` JSON
@@ -77,7 +81,7 @@ Legend:
 | `SessionStatus` | Session state: active or completed. | `domain.py` |
 | `Incident` | Operational problem created from a faulted charger state. | `domain.py`, `incidents` table |
 | `DomainEvent` | Business event persisted for traceability and analytics. | `domain.py`, `domain_events` table |
-| `LoadForecast` | Predicted next-hour load based on recent occupied charger telemetry. | `services.forecast_next_hour` |
+| `LoadForecast` | Predicted next-hour load based on recent occupied charger telemetry. | `services.forecast_load_next_hour` |
 
 ## DDD Mapping
 
@@ -108,17 +112,27 @@ the prediction result cannot be mutated after it is produced.
 
 ### Domain Events
 
-The MVP records domain events whenever important operational facts occur:
+Domain events describe business-relevant facts that operations, billing or
+analytics react to. They are stored in the `domain_events` table:
 
-- `TelemetryReceived`
 - `ChargerStatusChanged`
 - `SessionStarted`
 - `SessionEnded`
 - `IncidentOpened`
 - `LoadForecastCalculated`
 
-The events are stored in the `domain_events` table and exposed to Power BI as
-part of the operational analytics dataset.
+### Integration Events
+
+`TelemetryReceived` is recorded by `services.simulate_telemetry` and is also
+stored in the `domain_events` table for persistence simplicity, but
+conceptually it is an **integration event** — a technical signal from the
+OCPP/hardware context entering our Charging Operations Intelligence context.
+The business does not react to each raw reading; it reacts to the derived
+domain events (`ChargerStatusChanged`, `IncidentOpened`) that a reading may
+trigger. A production system would typically separate the two logs.
+
+All events (domain and integration) are exposed to Power BI as part of the
+operational analytics dataset.
 
 ### Domain Services
 
@@ -149,11 +163,13 @@ app.py                  Flask routes, API, security headers, health checks
         |
         v
 services.py             Application/domain services and BI data logic
-        |
-        v
-domain.py               Entities, value objects and domain events
-        |
-        v
+   |          |
+   v          v
+domain.py     price_service.py        Infrastructure layer — fetches
+   |          (calls elprisenligenu.dk,  Danish spot prices via HTTPS
+   |           caches per day+region)
+   |
+   v
 database.py             SQLite schema, seed data and query helpers
         |
         v
@@ -233,8 +249,9 @@ User/API action
 ```
 
 For example, telemetry simulation creates a `TelemetryReading`, updates the
-`Charger` status, records `TelemetryReceived`, optionally records
-`ChargerStatusChanged`, and opens an `Incident` if the simulated status is
+`Charger` status, records the integration event `TelemetryReceived`,
+optionally records the domain event `ChargerStatusChanged`, and opens an
+`Incident` (plus an `IncidentOpened` domain event) if the simulated status is
 `faulted`.
 
 ## Operations and Security
