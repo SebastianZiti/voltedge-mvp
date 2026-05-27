@@ -10,7 +10,8 @@ ladesessioner, domain events, KPI'er, forecast og Power BI API-data hænger samm
 - API til chargers, sessions, telemetry simulation, analytics og Power BI data.
 - DDD-inspireret domænemodel med entities, value objects, domain events og domain services.
 - SQLite som operational database.
-- Simpelt load forecast som analytics/domain service.
+- Machine Learning-baseret load forecast (scikit-learn `LinearRegression`) som domain service med R²-kvalitetsmål og cold-start-fallback.
+- Realtids el-pris-integration via [elprisenligenu.dk](https://www.elprisenligenu.dk/elpris-api) — sessioner afregnes med aktuel dansk spot-pris (DK1/DK2) inkl. 25% moms, med fallback hvis API'et er nede.
 - Demo sessions på tværs af alle ladestandere, så Power BI har data at arbejde med.
 - Power BI-venlige JSON-endpoints til ekstern BI-rapportering.
 - DevSecOps-elementer: tests, CI, Docker, `/health`, `/ready`, security headers og logging.
@@ -175,6 +176,10 @@ GET  /api/powerbi/report-data
   - Deskriptiv: `calculate_kpis` (KPI'er, uptime, peak load).
   - Diagnostisk: `diagnose_incidents_by_charger` (per-charger incident-nedbrydning).
   - Predictive: `forecast_load_next_hour` (scikit-learn lineær regression, med `forecast_next_hour` som cold-start fallback).
+- Infrastructure layer:
+  - `database.py` — SQLite + transaktioner.
+  - `price_service.py` — henter danske spot-priser fra elprisenligenu.dk (DK1/DK2), lægger moms på, cacher pr. dag og region, og falder tilbage til 3.25 DKK/kWh hvis API'et er nede.
+  - `observability.py` — Prometheus metrics-rendering.
 - Persistens: SQLite-tabellerne `chargers`, `telemetry`, `sessions`, `incidents`, `domain_events`.
 
 Domæneobjekterne ligger i `domain.py`, og service-laget mapper mellem domæneobjekter og SQLite-records i `services.py`.
@@ -182,6 +187,9 @@ Domæneobjekterne ligger i `domain.py`, og service-laget mapper mellem domæneob
 Se også:
 
 - `docs/ARCHITECTURE.md` for bounded context, ubiquitous language, DDD-mapping, dataflow og drift.
+- `docs/SPROG-BRUG.md` for fuld ordbog over domæne-termer.
+- `docs/BOUNDED-CONTEXT-MAP.md` og `docs/DOMAENEMODEL.md` for diagram-skabeloner.
+- `docs/MUNDTLIGT-FORSVAR.md` for mundtligt forsvar med censor-Q&A.
 - `docs/POWERBI.md` for den eksterne Power BI-integration og dashboard-data contract.
 
 ## DevSecOps og drift
