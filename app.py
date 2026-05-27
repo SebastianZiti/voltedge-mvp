@@ -149,6 +149,13 @@ def create_app(db_path=None):
         services.seed_demo_sessions(db_path_from_config())
         return redirect(url_for("sessions_page"))
 
+    @app.get("/favicon.ico")
+    def favicon():
+        # Browsere beder automatisk om /favicon.ico naar man aabner en side.
+        # Vi har ikke et favicon, saa vi svarer 204 "No Content" - det stopper
+        # browseren fra at proeve igen og holder /metrics-fejlraten ren.
+        return "", 204
+
     @app.get("/health")
     def health():
         return jsonify({"status": "healthy", "service": "voltedge-mvp"})
