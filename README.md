@@ -14,7 +14,7 @@ ladesessioner, domain events, KPI'er, forecast og Power BI API-data hænger samm
 - Realtids el-pris-integration via [elprisenligenu.dk](https://www.elprisenligenu.dk/elpris-api) — sessioner afregnes med aktuel dansk spot-pris (DK1/DK2) inkl. 25% moms, med fallback hvis API'et er nede.
 - Demo sessions på tværs af alle ladestandere, så Power BI har data at arbejde med.
 - Power BI-venlige JSON-endpoints til ekstern BI-rapportering.
-- DevSecOps-elementer: tests, CI, Docker, `/health`, `/ready`, security headers og logging.
+- DevSecOps-elementer: tests, CI/CD med pip-audit, Docker, `/health`, `/ready`, `/metrics` (Prometheus-format), security headers, logging og Prometheus/Grafana-monitoring-stack.
 
 ## Start lokalt
 
@@ -37,9 +37,10 @@ python app.py
 Åbn:
 
 ```text
-http://127.0.0.1:5001        # webapp
-http://127.0.0.1:9090        # Prometheus (kun via docker compose)
-http://127.0.0.1:3000        # Grafana   (kun via docker compose; admin/admin)
+http://127.0.0.1:5001          # webapp
+http://127.0.0.1:5001/metrics  # appens raw Prometheus-metrics (kan ses direkte i browser)
+http://127.0.0.1:9090          # Prometheus (kun via docker compose)
+http://127.0.0.1:3000          # Grafana   (kun via docker compose; admin/admin)
 ```
 
 ## Miljøvariabler (`.env.example`)
@@ -151,6 +152,7 @@ Når appen kører lokalt og data ændres, kan rapporten opdateres med `Refresh` 
 ```text
 GET  /health
 GET  /ready
+GET  /metrics                          # Prometheus tekst-format
 GET  /api/chargers
 POST /api/telemetry/simulate
 GET  /api/sessions
@@ -160,6 +162,7 @@ POST /api/sessions/seed-demo
 GET  /api/analytics/kpis
 GET  /api/analytics/forecast
 GET  /api/analytics/diagnostics
+POST /api/analytics/forecast/publish   # CQRS — beregner + skriver event
 GET  /api/events
 GET  /api/powerbi/summary
 GET  /api/powerbi/report-data
@@ -196,13 +199,17 @@ Se også:
 
 Programmet indeholder:
 
-- Unit tests i `tests/`.
+- Unit- og integrationstests i `tests/` (41 tests, alle grønne).
 - GitHub Actions CI/CD i `.github/workflows/cicd.yml` — én samlet pipeline med to jobs: `ci` (test + pip-audit + Docker build) og `cd` (publicer image til GitHub Packages). `cd` kører kun hvis `ci` er grøn (`needs: ci`) og kun på `main` eller manuel trigger.
-- Dockerfile med healthcheck mod `/ready`.
+- Dockerfile med non-root bruger (`appuser`) og healthcheck mod `/ready`.
 - `/health` til simpel liveness.
-- `/ready` til database-readiness.
+- `/ready` til database-readiness (lækker ikke fejldetaljer).
+- `/metrics`-endpoint i Prometheus-format med custom counters og histogrammer for HTTP-requests og database-queries (`observability.py`).
+- Prometheus-container i `docker-compose.yml` der scraper `/metrics` automatisk og gemmer tidsserierne.
+- Grafana-container med færdig-provisioneret dashboard for HTTP-latens, fejlrater og database-belastning (`grafana/dashboards/voltedge-overview.json`).
 - Security headers: CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Permissions-Policy`.
 - Request logging via Flask logger.
+- Resilient ekstern integration: `price_service.py` kalder elprisenligenu.dk men falder tilbage til konstant pris hvis API'et er nede, så MVP'en virker offline.
 - Miljøvariabler:
   - `SERVICE_ENV`
   - `LOG_LEVEL`
@@ -307,15 +314,33 @@ tabellen.
 python3 -m unittest discover -s tests
 ```
 
-Testene dækker:
+41 tests fordelt på tre filer:
 
-- database seed med demo-ladestandere.
-- telemetry simulation.
-- start og afslutning af sessions.
-- demo sessions på alle chargers.
-- KPI-beregning, inkl. uptime hvor `faulted` ikke tæller som drift.
-- Power BI JSON-endpoints.
-- `/ready` og security headers.
+- **`tests/test_services.py`** — service-/domain-laget:
+  - Database seed med demo-ladestandere.
+  - Telemetry-simulation og afledte domain events.
+  - Start og afslutning af sessions (incl. atomic claim mod TOCTOU).
+  - Idempotent `seed_demo_sessions` (ingen dubletter ved gentagne kald).
+  - KPI-beregning, inkl. uptime hvor `faulted` ikke tæller som drift.
+  - Power BI JSON-eksport.
+  - ML-forecast: cold-start-fallback ved < 5 målinger + LinearRegression når der er nok data.
+  - Diagnostisk incident-analyse per charger.
+  - Frozen `LoadForecast` value object (kan ikke ændres efter beregning).
+  - Transaction rollback ved fejl midt i en operation.
+- **`tests/test_app.py`** — integrationstests via Flask test_client:
+  - `/ready`-endpoint tester databaseforbindelsen.
+  - Security headers sættes korrekt på alle responses.
+  - `/ready` lækker ikke fejldetaljer.
+  - `/metrics` eksponerer Prometheus-format med HTTP- og DB-metrics.
+  - SECRET_KEY hard-fail i test/production (3 scenarier: tom, app-default, compose-default).
+  - `/sessions/seed-demo` blokeret (404) i production.
+- **`tests/test_price_service.py`** — el-pris-integration (mocket, så testene virker offline):
+  - Region-mapping (Copenhagen → DK2, Aarhus/Odense/Aalborg → DK1).
+  - 25% moms lægges korrekt på spot-prisen.
+  - Korrekt time-of-day-lookup i API-svaret.
+  - Fallback til konstant pris hvis API'et fejler.
+  - Negativ spot-pris floor'es til 0 (real-world fænomen i Danmark).
+  - Cache forhindrer gentagne API-kald samme dag.
 
 ## Docker
 
