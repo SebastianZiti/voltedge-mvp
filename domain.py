@@ -1,4 +1,6 @@
-from dataclasses import dataclass
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 
@@ -56,9 +58,42 @@ class Charger:
     id: str
     name: str
     location: str
+    region: str = "DK2"
+    sockets: list[Socket] = field(default_factory=list)
+
+    @classmethod
+    def create(cls, charger_id, name, location, region, socket_specs, heartbeat):
+        charger = cls(id=charger_id, name=name, location=location, region=region)
+        for spec in socket_specs:
+            charger.add_socket(
+                max_power_kw=float(spec["max_power_kw"]),
+                connector_type=spec.get("connector_type", "Type2"),
+                heartbeat=heartbeat,
+            )
+        return charger
+
+    def add_socket(self, max_power_kw, connector_type, heartbeat):
+        socket_number = len(self.sockets) + 1
+        socket = Socket(
+            id=f"{self.id}-S{socket_number}",
+            charger_id=self.id,
+            socket_number=socket_number,
+            max_power_kw=max_power_kw,
+            status=ChargerStatus.AVAILABLE,
+            connector_type=connector_type,
+            last_heartbeat=heartbeat,
+        )
+        self.sockets.append(socket)
+        return socket
 
     def to_record(self):
-        return {"id": self.id, "name": self.name, "location": self.location}
+        return {
+            "id": self.id,
+            "name": self.name,
+            "location": self.location,
+            "region": self.region,
+            "sockets": [socket.to_record() for socket in self.sockets],
+        }
 
 
 @dataclass

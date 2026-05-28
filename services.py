@@ -7,6 +7,7 @@ from sklearn.linear_model import LinearRegression
 import database
 import price_service
 from domain import (
+    Charger,
     ChargerStatus,
     ChargingSession,
     DomainEvent,
@@ -27,33 +28,43 @@ FORECAST_GROWTH_FACTOR = 1.08
 
 
 def list_chargers(db_path=database.DEFAULT_DB_PATH):
-    chargers = database.query_all(
+    charger_rows = database.query_all(
         "SELECT * FROM chargers ORDER BY id",
         db_path=db_path,
     )
-    sockets = database.query_all(
+    socket_rows = database.query_all(
         "SELECT * FROM sockets ORDER BY charger_id, socket_number",
         db_path=db_path,
     )
     sockets_by_charger = {}
-    for sock in sockets:
-        sockets_by_charger.setdefault(sock["charger_id"], []).append(sock)
-    for charger in chargers:
-        charger["sockets"] = sockets_by_charger.get(charger["id"], [])
-    return chargers
+    for row in socket_rows:
+        sockets_by_charger.setdefault(row["charger_id"], []).append(_socket_from_row(row))
+
+    chargers = [
+        Charger(
+            id=row["id"],
+            name=row["name"],
+            location=row["location"],
+            region=row["region"],
+            sockets=sockets_by_charger.get(row["id"], []),
+        )
+        for row in charger_rows
+    ]
+    return [charger.to_record() for charger in chargers]
 
 
 def add_charger(name, location, sockets, db_path=database.DEFAULT_DB_PATH, region="DK2"):
     charger_id = _next_charger_id(db_path)
     now = datetime.now().isoformat(timespec="seconds")
+    charger = Charger.create(charger_id, name, location, region, sockets, now)
 
     with database.transaction(db_path) as db:
         db.execute(
             "INSERT INTO chargers (id, name, location, region) VALUES (?, ?, ?, ?)",
-            (charger_id, name, location, region),
+            (charger.id, charger.name, charger.location, charger.region),
         )
-        for i, sock in enumerate(sockets, 1):
-            socket_id = f"{charger_id}-S{i}"
+        for socket in charger.sockets:
+            record = socket.to_record()
             db.execute(
                 """
                 INSERT INTO sockets
@@ -61,25 +72,23 @@ def add_charger(name, location, sockets, db_path=database.DEFAULT_DB_PATH, regio
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    socket_id, charger_id, i,
-                    float(sock["max_power_kw"]),
-                    ChargerStatus.AVAILABLE.value,
-                    sock.get("connector_type", "Type2"),
-                    now,
+                    record["id"], record["charger_id"], record["socket_number"],
+                    record["max_power_kw"], record["status"],
+                    record["connector_type"], record["last_heartbeat"],
                 ),
             )
         db.execute(
             "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
             (
                 "ChargerAdded",
-                charger_id,
-                f"Charger '{name}' added at {location} with {len(sockets)} socket(s)",
+                charger.id,
+                f"Charger '{charger.name}' added at {charger.location} with {len(charger.sockets)} socket(s)",
                 now,
             ),
         )
 
     return database.query_one(
-        "SELECT * FROM chargers WHERE id = ?", (charger_id,), db_path=db_path
+        "SELECT * FROM chargers WHERE id = ?", (charger.id,), db_path=db_path
     )
 
 
