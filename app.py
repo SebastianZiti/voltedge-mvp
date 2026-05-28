@@ -106,6 +106,7 @@ def create_app(db_path=None):
     def add_charger_form():
         name = request.form.get("name", "").strip()
         location = request.form.get("location", "").strip()
+        region = request.form.get("region", "DK2").strip()
         powers = request.form.getlist("socket_max_power[]")
         connectors = request.form.getlist("socket_connector_type[]")
         if not name or not location or not powers:
@@ -116,7 +117,7 @@ def create_app(db_path=None):
             if p and float(p) > 0
         ]
         if sockets:
-            services.add_charger(name, location, sockets, db_path_from_config())
+            services.add_charger(name, location, sockets, db_path_from_config(), region=region)
         return redirect(url_for("chargers_page"))
 
     @app.get("/sessions")
@@ -195,11 +196,12 @@ def create_app(db_path=None):
         payload = request.get_json(silent=True) or {}
         name = payload.get("name", "").strip()
         location = payload.get("location", "").strip()
+        region = payload.get("region", "DK2").strip()
         sockets = payload.get("sockets", [])
         if not name or not location or not sockets:
             return jsonify({"error": "name, location and sockets are required"}), 400
-        station = services.add_charger(name, location, sockets, db_path_from_config())
-        return jsonify(station), 201
+        charger = services.add_charger(name, location, sockets, db_path_from_config(), region=region)
+        return jsonify(charger), 201
 
     @app.post("/api/telemetry/simulate")
     def api_simulate_telemetry():

@@ -8,7 +8,7 @@
     </div>
     <div class="actions">
         <form method="post" action="{{ url_for('start_session_form') }}">
-            <button class="primary" type="submit">Start test session</button>
+            <button class="primary" type="submit">Start session</button>
         </form>
         <form method="post" action="{{ url_for('end_session_form') }}">
             <button type="submit">End latest session</button>
@@ -46,7 +46,7 @@
                 <td><span class="status {{ session.status }}">{{ session.status }}</span></td>
             </tr>
             {% else %}
-            <tr><td colspan="8">No sessions yet. Start a test session to begin.</td></tr>
+            <tr><td colspan="8">No sessions yet. Start a session to begin.</td></tr>
             {% endfor %}
         </tbody>
     </table>

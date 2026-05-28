@@ -54,7 +54,7 @@
     <h3 style="margin-bottom: 1rem;">Add new charger</h3>
     <form method="POST" action="{{ url_for('add_charger_form') }}" id="add-charger-form">
 
-        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
             <div>
                 <label style="display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: var(--muted);">Charger name</label>
                 <input
@@ -70,10 +70,20 @@
                 <input
                     type="text"
                     name="location"
-                    placeholder="e.g. Copenhagen"
+                    placeholder="e.g. Aarhus C"
                     required
                     style="width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; background: var(--bg); color: var(--text);"
                 >
+            </div>
+            <div>
+                <label style="display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: var(--muted);">Price region</label>
+                <select
+                    name="region"
+                    style="width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; background: var(--bg); color: var(--text);"
+                >
+                    <option value="DK1">DK1 — Jylland / Fyn</option>
+                    <option value="DK2">DK2 — Sjælland / øer</option>
+                </select>
             </div>
         </div>
 

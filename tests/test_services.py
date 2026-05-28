@@ -25,24 +25,24 @@ class ServiceTests(unittest.TestCase):
         self._price_patcher.stop()
         self.temp_dir.cleanup()
 
-    def test_database_starts_with_demo_stations(self):
-        stations = services.list_chargers(self.db_path)
+    def test_database_starts_with_demo_chargers(self):
+        chargers = services.list_chargers(self.db_path)
 
-        self.assertEqual(len(stations), 4)
-        self.assertEqual(stations[0]["id"], "CH-001")
+        self.assertEqual(len(chargers), 4)
+        self.assertEqual(chargers[0]["id"], "CH-001")
 
-    def test_demo_stations_have_correct_socket_counts(self):
-        stations = services.list_chargers(self.db_path)
-        by_id = {s["id"]: s for s in stations}
+    def test_demo_chargers_have_correct_socket_counts(self):
+        chargers = services.list_chargers(self.db_path)
+        by_id = {c["id"]: c for c in chargers}
 
-        self.assertEqual(len(by_id["CH-001"]["sockets"]), 2)  # 2 stik
-        self.assertEqual(len(by_id["CH-002"]["sockets"]), 3)  # 3 stik
-        self.assertEqual(len(by_id["CH-003"]["sockets"]), 1)  # 1 stik
-        self.assertEqual(len(by_id["CH-004"]["sockets"]), 2)  # 2 stik
+        self.assertEqual(len(by_id["CH-001"]["sockets"]), 2)
+        self.assertEqual(len(by_id["CH-002"]["sockets"]), 3)
+        self.assertEqual(len(by_id["CH-003"]["sockets"]), 1)
+        self.assertEqual(len(by_id["CH-004"]["sockets"]), 2)
 
-    def test_can_add_station_with_multiple_sockets(self):
-        station = services.add_charger(
-            name="Test Station",
+    def test_can_add_charger_with_multiple_sockets(self):
+        charger = services.add_charger(
+            name="Test Charger",
             location="Testby",
             sockets=[
                 {"max_power_kw": 22.0, "connector_type": "Type2"},
@@ -52,19 +52,18 @@ class ServiceTests(unittest.TestCase):
             db_path=self.db_path,
         )
 
-        self.assertIsNotNone(station)
-        self.assertEqual(station["name"], "Test Station")
+        self.assertIsNotNone(charger)
+        self.assertEqual(charger["name"], "Test Charger")
 
-        stations = services.list_chargers(self.db_path)
-        new_station = next(s for s in stations if s["name"] == "Test Station")
-        self.assertEqual(len(new_station["sockets"]), 3)
+        chargers = services.list_chargers(self.db_path)
+        new_charger = next(c for c in chargers if c["name"] == "Test Charger")
+        self.assertEqual(len(new_charger["sockets"]), 3)
 
     def test_can_simulate_telemetry_and_create_events(self):
         created = services.simulate_telemetry(self.db_path)
         telemetry = services.list_telemetry(db_path=self.db_path)
         events = services.list_domain_events(db_path=self.db_path)
 
-        # 8 stik i alt (2+3+1+2), én telemetri-aflæsning per stik
         self.assertEqual(len(created), 8)
         self.assertEqual(len(telemetry), 8)
         self.assertTrue(any(event["event_name"] == "TelemetryReceived" for event in events))
@@ -161,9 +160,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(first["status"], "active")
         self.assertIsNone(second)
 
-    def test_two_sockets_on_same_station_can_run_simultaneously(self):
-        # Kerneforretningsregel: to stik på SAMME standere kan lade på samme tid.
-        # Det var ikke muligt i den gamle model med én Charger per enhed.
+    def test_two_sockets_on_same_charger_can_run_simultaneously(self):
         first = services.start_session("CH-001-S1", db_path=self.db_path)
         second = services.start_session("CH-001-S2", db_path=self.db_path)
 
@@ -236,14 +233,14 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             forecast.model = "Tampered"
 
-    def test_diagnose_incidents_returns_all_stations_with_zero_when_no_incidents(self):
+    def test_diagnose_incidents_returns_all_chargers_with_zero_when_no_incidents(self):
         diagnostics = services.diagnose_incidents_by_charger(self.db_path)
 
         self.assertEqual(len(diagnostics), 4)
         self.assertTrue(all(row["incident_count"] == 0 for row in diagnostics))
         self.assertTrue(all(row["last_incident_at"] is None for row in diagnostics))
 
-    def test_diagnose_incidents_attributes_counts_to_correct_station(self):
+    def test_diagnose_incidents_attributes_counts_to_correct_charger(self):
         database.execute(
             "INSERT INTO incidents (charger_id, description, severity, created_at) VALUES (?, ?, ?, ?)",
             ("CH-002", "first fault", "high", "2026-05-20T10:00:00"),

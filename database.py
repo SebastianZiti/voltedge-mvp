@@ -23,12 +23,10 @@ def init_db(db_path=DEFAULT_DB_PATH):
             CREATE TABLE IF NOT EXISTS chargers (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                location TEXT NOT NULL
+                location TEXT NOT NULL,
+                region TEXT NOT NULL DEFAULT 'DK2'
             );
 
-            -- Hvert stik er en separat entity på en charger.
-            -- En charger kan have 1 til mange stik.
-            -- Status og effekt hører til stikket, ikke chargeren.
             CREATE TABLE IF NOT EXISTS sockets (
                 id TEXT PRIMARY KEY,
                 charger_id TEXT NOT NULL,
@@ -63,8 +61,6 @@ def init_db(db_path=DEFAULT_DB_PATH):
                 FOREIGN KEY (socket_id) REFERENCES sockets(id)
             );
 
-            -- Incidents knyttes til chargeren (charger_id), ikke et enkelt stik.
-            -- En fysisk hændelse (fx "chargeren er væltet") berører hele enheden.
             CREATE TABLE IF NOT EXISTS incidents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 charger_id TEXT NOT NULL,
@@ -85,19 +81,21 @@ def init_db(db_path=DEFAULT_DB_PATH):
             """
         )
 
+        try:
+            db.execute("ALTER TABLE chargers ADD COLUMN region TEXT NOT NULL DEFAULT 'DK2'")
+        except Exception:
+            pass
+
         db.executemany(
-            "INSERT OR IGNORE INTO chargers (id, name, location) VALUES (?, ?, ?)",
+            "INSERT OR IGNORE INTO chargers (id, name, location, region) VALUES (?, ?, ?, ?)",
             [
-                ("CH-001", "Copenhagen City Hub", "Copenhagen"),
-                ("CH-002", "Aarhus Fleet Depot", "Aarhus"),
-                ("CH-003", "Odense Parking East", "Odense"),
-                ("CH-004", "Aalborg Housing Site", "Aalborg"),
+                ("CH-001", "Copenhagen City Hub", "Copenhagen", "DK2"),
+                ("CH-002", "Aarhus Fleet Depot", "Aarhus", "DK1"),
+                ("CH-003", "Odense Parking East", "Odense", "DK1"),
+                ("CH-004", "Aalborg Housing Site", "Aalborg", "DK1"),
             ],
         )
 
-        # Demo-stik: CH-001 har 2 stik, CH-002 har 3 stik, CH-003 har 1 stik, CH-004 har 2 stik.
-        # connector_type afspejler hvad der typisk ses på danske ladestationer:
-        # Type2 til AC-opladning, CCS til hurtigopladning (DC).
         db.executemany(
             """
             INSERT OR IGNORE INTO sockets
@@ -159,20 +157,15 @@ def execute(sql, params=(), db_path=DEFAULT_DB_PATH):
 
 @contextmanager
 def transaction(db_path=DEFAULT_DB_PATH):
-    # Bruges som "with database.transaction(...) as db:" i services.py.
-    # Alt der sker mellem yield og db.commit() bliver gemt SAMMEN i databasen.
-    # Hvis noget fejler undervejs, rulles ALLE ændringer tilbage (rollback).
-    # Det sikrer aggregat-konsistens: enten gennemføres hele forretningshandlingen,
-    # eller også sker der ingenting. Forhindrer "halv-skrevne" tilstande.
     db = get_connection(db_path)
     start = perf_counter()
     try:
-        db.execute("BEGIN IMMEDIATE")  # tager skrive-lås nu, så ingen andre kan skrive imens
+        db.execute("BEGIN IMMEDIATE")
         yield db
-        db.commit()  # alt gik godt -> gem ændringer
+        db.commit()
         observability.record_db_query("transaction", perf_counter() - start)
     except Exception:
-        db.rollback()  # noget fejlede -> annullér alle ændringer
+        db.rollback()
         observability.record_db_query("transaction", perf_counter() - start, error=True)
         raise
     finally:

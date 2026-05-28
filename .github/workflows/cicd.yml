@@ -1,12 +1,5 @@
 name: CI/CD
 
-# Een samlet pipeline med to jobs:
-#   1) ci  - tester, scanner og bygger Docker-image (koerer paa alle pushes + PRs)
-#   2) cd  - publicerer image til GitHub Container Registry
-#           (koerer KUN paa main eller manuelt, og kun hvis ci er groen via needs:)
-# Adskillelsen sikrer at CD ikke kan ske uden groen CI - dvs. der kommer aldrig
-# en defekt build i registry.
-
 on:
   push:
   pull_request:
@@ -33,10 +26,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # Sikkerhed: pip-audit slaar vores deps op i en database over kendte
-      # saarbarheder (PyPI Advisory DB). Hvis der findes en CVE i Flask,
-      # numpy eller scikit-learn, fejler bygget her - saa vi opdager det
-      # FOER koden kommer i production.
       - name: Audit dependencies for known vulnerabilities
         run: |
           pip install pip-audit
@@ -51,9 +40,6 @@ jobs:
   cd:
     name: CD - publish container
     runs-on: ubuntu-latest
-    # Afhaengigheden 'needs: ci' betyder at CD kun starter hvis CI er groen.
-    # 'if'-betingelsen begraenser CD til main-branch eller manuel trigger,
-    # saa feature-branches og PRs ikke utilsigtet publicerer images.
     needs: ci
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
 
@@ -71,19 +57,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Docker/GHCR kraever at image-navne er i lowercase. github.repository_owner
-      # giver "SebastianZiti" med store bogstaver, saa vi hardcoder den
-      # lowercase form her. Hvis vi skifter ejer en dag, skal denne linje
-      # opdateres.
-      #
-      # OCI-label'en 'org.opencontainers.image.source' fortaeller GitHub
-      # hvilket repo der ejer pakken. Uden den vises pakken som "uafhaengig"
-      # paa brugerens profil og bliver ikke automatisk linket til repoet -
-      # derfor vises den heller ikke korrekt under github.com/<user>?tab=packages.
-      # VIGTIGT: 'labels:' sættes i image-config (synlige via docker inspect),
-      # men GHCR's pakke-beskrivelse laeses fra MANIFEST-annotations.
-      # 'annotations:' med 'index:'-prefix saetter dem paa manifest-index,
-      # som er det GHCR's UI viser under pakkenavnet.
       - name: Build and publish Docker image
         uses: docker/build-push-action@v6
         with:
@@ -91,11 +64,11 @@ jobs:
           push: true
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence (Flask + SQLite + sklearn + Prometheus/Grafana). Eksamens-MVP for 6. semester.
+            org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence (Flask + SQLite + sklearn + Prometheus/Grafana).
             org.opencontainers.image.licenses=MIT
           annotations: |
             index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            index:org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence (Flask + SQLite + sklearn + Prometheus/Grafana). Eksamens-MVP for 6. semester.
+            index:org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence (Flask + SQLite + sklearn + Prometheus/Grafana).
             index:org.opencontainers.image.licenses=MIT
           tags: |
             ghcr.io/sebastianziti/voltedge-mvp:latest

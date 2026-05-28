@@ -53,9 +53,6 @@ class MoneyDkk:
 
 @dataclass
 class Charger:
-    # Aggregate root — den fysiske ladestandere (charger) på en lokation.
-    # En charger har ét ID, et navn og en adresse/lokation.
-    # Selve opladningen sker via stik (Socket), som en charger kan have 1-N af.
     id: str
     name: str
     location: str
@@ -66,9 +63,6 @@ class Charger:
 
 @dataclass
 class Socket:
-    # Et enkelt stik/connector på en charger.
-    # En charger kan have 1-N stik (fx 1 Type 2 + 1 CCS).
-    # Status, effekt og heartbeat hører til stikket — ikke chargeren som helhed.
     id: str
     charger_id: str
     socket_number: int
@@ -100,8 +94,6 @@ class Socket:
 
 @dataclass
 class TelemetryReading:
-    # socket_id: målingen tilhører et specifikt stik, ikke standeren som helhed.
-    # Hvert stik kan lade uafhængigt og have sin egen strøm/spænding/status.
     socket_id: str
     power_kw: PowerKw
     voltage: float
@@ -123,8 +115,6 @@ class TelemetryReading:
 @dataclass
 class ChargingSession:
     id: int | None
-    # socket_id: sessionen tilhører et stik.
-    # To stik på samme standere kan sagtens have aktive sessioner samtidigt.
     socket_id: str
     contract_id: str
     start_time: datetime
@@ -173,8 +163,6 @@ class ChargingSession:
 
 @dataclass
 class Incident:
-    # charger_id: en hændelse knyttes til chargeren, ikke et specifikt stik.
-    # Fx "Chargeren er fysisk beskadiget" gælder hele enheden.
     charger_id: str
     description: str
     severity: str

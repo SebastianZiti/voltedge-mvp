@@ -7,7 +7,6 @@ from sklearn.linear_model import LinearRegression
 import database
 import price_service
 from domain import (
-    Charger,
     ChargerStatus,
     ChargingSession,
     DomainEvent,
@@ -44,14 +43,14 @@ def list_chargers(db_path=database.DEFAULT_DB_PATH):
     return chargers
 
 
-def add_charger(name, location, sockets, db_path=database.DEFAULT_DB_PATH):
+def add_charger(name, location, sockets, db_path=database.DEFAULT_DB_PATH, region="DK2"):
     charger_id = _next_charger_id(db_path)
     now = datetime.now().isoformat(timespec="seconds")
 
     with database.transaction(db_path) as db:
         db.execute(
-            "INSERT INTO chargers (id, name, location) VALUES (?, ?, ?)",
-            (charger_id, name, location),
+            "INSERT INTO chargers (id, name, location, region) VALUES (?, ?, ?, ?)",
+            (charger_id, name, location, region),
         )
         for i, sock in enumerate(sockets, 1):
             socket_id = f"{charger_id}-S{i}"
@@ -244,18 +243,14 @@ def end_latest_session(db_path=database.DEFAULT_DB_PATH):
 
         socket_row = db.execute(
             """
-            SELECT c.location
+            SELECT c.region
             FROM sockets s
             JOIN chargers c ON s.charger_id = c.id
             WHERE s.id = ?
             """,
             (session.socket_id,),
         ).fetchone()
-        region = (
-            price_service.get_region_for_location(socket_row["location"])
-            if socket_row
-            else price_service.DEFAULT_REGION
-        )
+        region = socket_row["region"] if socket_row else price_service.DEFAULT_REGION
         price_per_kwh = price_service.get_price_per_kwh(region, now)
 
         completed = session.complete(now, EnergyKwh(round(random.uniform(8, 38), 2)), price_per_kwh)
@@ -284,9 +279,6 @@ def end_latest_session(db_path=database.DEFAULT_DB_PATH):
 
 
 def seed_demo_sessions(db_path=database.DEFAULT_DB_PATH):
-    # Demo plan shows multiple sockets on the SAME charger running simultaneously.
-    # CH-001-S1 and CH-001-S2 both start 4 hours ago — overlapping sessions.
-    # CH-002-S1, S2 and S3 all start 6 hours ago — three concurrent sessions.
     chargers = {c["id"]: c for c in database.query_all("SELECT * FROM chargers", db_path=db_path)}
     sockets = {s["id"]: s for s in database.query_all("SELECT * FROM sockets", db_path=db_path)}
 
@@ -321,11 +313,7 @@ def seed_demo_sessions(db_path=database.DEFAULT_DB_PATH):
 
         charger_id = sockets[socket_id]["charger_id"]
         charger = chargers.get(charger_id)
-        region = (
-            price_service.get_region_for_location(charger["location"])
-            if charger
-            else price_service.DEFAULT_REGION
-        )
+        region = charger["region"] if charger else price_service.DEFAULT_REGION
         price_per_kwh = price_service.get_price_per_kwh(region, end_time)
         price_dkk = round(energy_kwh * price_per_kwh, 2)
 
@@ -405,7 +393,6 @@ def forecast_next_hour(db_path=database.DEFAULT_DB_PATH):
 
 
 def forecast_load_next_hour(db_path=database.DEFAULT_DB_PATH):
-    # ML domain service: predicts next hour load.
     rows = database.query_all(
         """
         SELECT power_kw, timestamp
@@ -417,7 +404,6 @@ def forecast_load_next_hour(db_path=database.DEFAULT_DB_PATH):
     )
     sample_size = len(rows)
 
-    # Cold-start: too few data points → fall back to simple mean.
     if sample_size < FORECAST_MIN_SAMPLES:
         return LoadForecast(
             next_hour_kw=forecast_next_hour(db_path),
@@ -467,8 +453,6 @@ def publish_forecast_next_hour(db_path=database.DEFAULT_DB_PATH):
 
 
 def diagnose_incidents_by_charger(db_path=database.DEFAULT_DB_PATH):
-    # Diagnostic domain service: per-charger incident breakdown.
-    # status = worst socket status on the charger (faulted > offline > occupied > available).
     rows = database.query_all(
         """
         SELECT c.id AS charger_id,
@@ -612,7 +596,6 @@ def build_powerbi_summary(db_path=database.DEFAULT_DB_PATH):
 
 
 def _next_charger_id(db_path):
-    # Generates sequential IDs: CH-005, CH-006, etc. based on existing chargers.
     rows = database.query_all("SELECT id FROM chargers ORDER BY id", db_path=db_path)
     max_num = 0
     for row in rows:
@@ -646,14 +629,6 @@ def _socket_from_row(row):
         status=ChargerStatus(row["status"]),
         connector_type=row["connector_type"],
         last_heartbeat=row["last_heartbeat"],
-    )
-
-
-def _charger_from_row(row):
-    return Charger(
-        id=row["id"],
-        name=row["name"],
-        location=row["location"],
     )
 
 

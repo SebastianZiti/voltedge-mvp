@@ -15,7 +15,6 @@ class AppTests(unittest.TestCase):
         self.app = create_app(self.db_path)
         self.client = self.app.test_client()
 
-        # Forhindre at integrationstests rammer den rigtige el-pris-API.
         self._price_patcher = mock.patch(
             "price_service._fetch_prices",
             side_effect=ConnectionError("test environment - no real API call"),
@@ -82,8 +81,6 @@ class AppTests(unittest.TestCase):
         self.assertEqual(telemetry_export.status_code, 404)
 
     def test_ready_does_not_leak_error_details(self):
-        # Sikkerhedstest: når databasen fejler, må svaret IKKE indeholde
-        # fejldetaljer (filsti, exception-besked osv.) — kun "not_ready".
         with mock.patch("app.database.query_one", side_effect=RuntimeError("hemmelig DB-detalje")):
             response = self.client.get("/ready")
 
@@ -93,9 +90,6 @@ class AppTests(unittest.TestCase):
 
 
 class SecretKeyHardeningTests(unittest.TestCase):
-    # Sikkerhedstest: i ikke-development miljøer skal appen nægte at starte
-    # hvis SECRET_KEY er glemt (eller stadig sat til default-værdien).
-
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "app.db"
@@ -119,10 +113,6 @@ class SecretKeyHardeningTests(unittest.TestCase):
                 create_app(self.db_path)
 
     def test_production_with_compose_placeholder_secret_key_raises(self):
-        # Loophole-check: docker-compose.yml har en anden placeholder-streng
-        # end app.py's DEFAULT_DEV_SECRET_KEY. Hvis nogen aendrer
-        # SERVICE_ENV til production i compose uden ogsaa at overskrive
-        # SECRET_KEY, skal appen stadig naegte at starte.
         with mock.patch.dict(
             os.environ,
             {
@@ -145,9 +135,6 @@ class SecretKeyHardeningTests(unittest.TestCase):
 
 
 class SeedDemoGateTests(unittest.TestCase):
-    # Sikkerhedstest: /sessions/seed-demo må kun virke udenfor production,
-    # for at undgå at test-data forurener rigtige data.
-
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db_path = Path(self.temp_dir.name) / "app.db"
@@ -171,7 +158,6 @@ class SeedDemoGateTests(unittest.TestCase):
             self.assertEqual(form_response.status_code, 404)
 
     def test_seed_demo_allowed_in_development(self):
-        # Default-miljøet i create_app() er "development".
         response = self.client_for_dev().post("/api/sessions/seed-demo")
         self.assertEqual(response.status_code, 201)
 
