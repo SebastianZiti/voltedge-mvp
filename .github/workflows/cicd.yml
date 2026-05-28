@@ -64,11 +64,11 @@ jobs:
           push: true
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence (Flask + SQLite + sklearn + Prometheus/Grafana).
+            org.opencontainers.image.description=VoltEdge MVP - Charging Operations (Flask + SQLite + sklearn + Prometheus/Grafana).
             org.opencontainers.image.licenses=MIT
           annotations: |
             index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            index:org.opencontainers.image.description=VoltEdge MVP - Smart Charging Operations Intelligence (Flask + SQLite + sklearn + Prometheus/Grafana).
+            index:org.opencontainers.image.description=VoltEdge MVP - Charging Operations (Flask + SQLite + sklearn + Prometheus/Grafana).
             index:org.opencontainers.image.licenses=MIT
           tags: |
             ghcr.io/sebastianziti/voltedge-mvp:latest
