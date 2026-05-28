@@ -17,7 +17,7 @@ class SessionStatus(str, Enum):
     COMPLETED = "completed"
 
 
-@dataclass
+@dataclass(frozen=True)
 class PowerKw:
     value: float
 
@@ -29,7 +29,7 @@ class PowerKw:
         return round(float(self.value), 2)
 
 
-@dataclass
+@dataclass(frozen=True)
 class EnergyKwh:
     value: float
 
@@ -41,7 +41,7 @@ class EnergyKwh:
         return round(float(self.value), 2)
 
 
-@dataclass
+@dataclass(frozen=True)
 class MoneyDkk:
     value: float
 
