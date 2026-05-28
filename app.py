@@ -12,11 +12,6 @@ import services
 
 DEFAULT_DEV_SECRET_KEY = "dev-only-change-me"
 
-# Placeholder-noegler vi NAEGTER at koere med udenfor 'development'.
-# Inkluderer app-default'en OG docker-compose-default'en, saa appen ikke
-# starter i production/test hvis nogen blot satte SERVICE_ENV=production
-# men glemte at overskrive SECRET_KEY i compose-filen. Skal udvides hvis
-# nye placeholder-strenge introduceres andre steder i repoet.
 KNOWN_PLACEHOLDER_SECRET_KEYS = frozenset({
     DEFAULT_DEV_SECRET_KEY,
     "local-compose-change-before-production",
@@ -32,10 +27,6 @@ def create_app(db_path=None):
     service_env = os.getenv("SERVICE_ENV", "development")
     app.config["SERVICE_ENV"] = service_env
 
-    # Sikkerhed: SECRET_KEY bruges af Flask til at signere sessions/cookies.
-    # Hvis vi kører i test eller production og nogen har glemt at sætte en
-    # rigtig nøgle, så stopper vi appen med det samme — i stedet for stille
-    # at bruge den offentligt kendte default-nøgle (som ville være sårbar).
     secret_key = os.getenv("SECRET_KEY")
     if service_env != "development":
         if not secret_key or secret_key in KNOWN_PLACEHOLDER_SECRET_KEYS:
@@ -70,7 +61,8 @@ def create_app(db_path=None):
         response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
-            "style-src 'self' 'unsafe-inline'"
+            "style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'"
         )
         return response
 
@@ -105,7 +97,27 @@ def create_app(db_path=None):
 
     @app.get("/chargers")
     def chargers_page():
-        return render_template("chargers.html", chargers=services.list_chargers(db_path_from_config()))
+        return render_template(
+            "chargers.html",
+            chargers=services.list_chargers(db_path_from_config()),
+        )
+
+    @app.post("/chargers/add")
+    def add_charger_form():
+        name = request.form.get("name", "").strip()
+        location = request.form.get("location", "").strip()
+        powers = request.form.getlist("socket_max_power[]")
+        connectors = request.form.getlist("socket_connector_type[]")
+        if not name or not location or not powers:
+            return redirect(url_for("chargers_page"))
+        sockets = [
+            {"max_power_kw": float(p), "connector_type": c}
+            for p, c in zip(powers, connectors)
+            if p and float(p) > 0
+        ]
+        if sockets:
+            services.add_charger(name, location, sockets, db_path_from_config())
+        return redirect(url_for("chargers_page"))
 
     @app.get("/sessions")
     def sessions_page():
@@ -127,7 +139,7 @@ def create_app(db_path=None):
 
     @app.post("/sessions/start")
     def start_session_form():
-        services.start_session(request.form.get("charger_id"), db_path_from_config())
+        services.start_session(request.form.get("socket_id"), db_path_from_config())
         return redirect(url_for("sessions_page"))
 
     @app.post("/sessions/end")
@@ -136,10 +148,6 @@ def create_app(db_path=None):
         return redirect(url_for("sessions_page"))
 
     def _block_seed_demo_in_production():
-        # Sikkerhed: seed-demo opretter test-data direkte i databasen.
-        # Det er kun ment til udvikling. Hvis nogen ved en fejl skubber
-        # demo-knappen i production, kunne det forurene rigtige data —
-        # så vi blokerer endpointet helt (returnerer 404) i production.
         return app.config["SERVICE_ENV"] == "production"
 
     @app.post("/sessions/seed-demo")
@@ -151,9 +159,6 @@ def create_app(db_path=None):
 
     @app.get("/favicon.ico")
     def favicon():
-        # Browsere beder automatisk om /favicon.ico naar man aabner en side.
-        # Vi har ikke et favicon, saa vi svarer 204 "No Content" - det stopper
-        # browseren fra at proeve igen og holder /metrics-fejlraten ren.
         return "", 204
 
     @app.get("/health")
@@ -165,9 +170,6 @@ def create_app(db_path=None):
         try:
             database.query_one("SELECT COUNT(*) AS count FROM chargers", db_path=db_path_from_config())
         except Exception:
-            # Sikkerhed: vi logger fejldetaljerne internt (til vores eget log-system),
-            # men sender KUN "not_ready" til klienten. Hvis vi sendte fx str(error),
-            # kunne en angriber se filstier eller DB-detaljer (information disclosure).
             app.logger.exception("Readiness check failed")
             return jsonify({"status": "not_ready"}), 503
         return jsonify({"status": "ready", "service": "voltedge-mvp", "environment": app.config["SERVICE_ENV"]})
@@ -188,6 +190,17 @@ def create_app(db_path=None):
     def api_chargers():
         return jsonify(services.list_chargers(db_path_from_config()))
 
+    @app.post("/api/chargers")
+    def api_add_charger():
+        payload = request.get_json(silent=True) or {}
+        name = payload.get("name", "").strip()
+        location = payload.get("location", "").strip()
+        sockets = payload.get("sockets", [])
+        if not name or not location or not sockets:
+            return jsonify({"error": "name, location and sockets are required"}), 400
+        station = services.add_charger(name, location, sockets, db_path_from_config())
+        return jsonify(station), 201
+
     @app.post("/api/telemetry/simulate")
     def api_simulate_telemetry():
         return jsonify({"created": services.simulate_telemetry(db_path_from_config())})
@@ -199,9 +212,9 @@ def create_app(db_path=None):
     @app.post("/api/sessions/start")
     def api_start_session():
         payload = request.get_json(silent=True) or {}
-        session = services.start_session(payload.get("charger_id"), db_path_from_config())
+        session = services.start_session(payload.get("socket_id"), db_path_from_config())
         if not session:
-            return jsonify({"error": "No available charger found"}), 409
+            return jsonify({"error": "No available socket found"}), 409
         return jsonify(session), 201
 
     @app.post("/api/sessions/end")
@@ -227,7 +240,6 @@ def create_app(db_path=None):
 
     @app.get("/api/analytics/diagnostics")
     def api_diagnostics():
-        # Diagnostisk endpoint: per-charger incident-nedbrydning.
         return jsonify(services.diagnose_incidents_by_charger(db_path_from_config()))
 
     @app.post("/api/analytics/forecast/publish")
@@ -250,7 +262,5 @@ def create_app(db_path=None):
 
 
 if __name__ == "__main__":
-    # Vi opretter foerst app-objektet naar filen koeres direkte (python app.py).
-    # Saa undgaar tests at trigge create_app() (og DB-init) ved import.
     app = create_app()
     app.run(host="0.0.0.0", port=5001, debug=os.getenv("FLASK_DEBUG", "0") == "1")

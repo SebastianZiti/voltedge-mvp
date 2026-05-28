@@ -23,35 +23,48 @@ def init_db(db_path=DEFAULT_DB_PATH):
             CREATE TABLE IF NOT EXISTS chargers (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
-                location TEXT NOT NULL,
-                status TEXT NOT NULL,
+                location TEXT NOT NULL
+            );
+
+            -- Hvert stik er en separat entity på en charger.
+            -- En charger kan have 1 til mange stik.
+            -- Status og effekt hører til stikket, ikke chargeren.
+            CREATE TABLE IF NOT EXISTS sockets (
+                id TEXT PRIMARY KEY,
+                charger_id TEXT NOT NULL,
+                socket_number INTEGER NOT NULL,
                 max_power_kw REAL NOT NULL,
-                last_heartbeat TEXT
+                status TEXT NOT NULL,
+                connector_type TEXT NOT NULL DEFAULT 'Type2',
+                last_heartbeat TEXT,
+                FOREIGN KEY (charger_id) REFERENCES chargers(id)
             );
 
             CREATE TABLE IF NOT EXISTS telemetry (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                charger_id TEXT NOT NULL,
+                socket_id TEXT NOT NULL,
                 power_kw REAL NOT NULL,
                 voltage REAL NOT NULL,
                 current REAL NOT NULL,
                 status TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
-                FOREIGN KEY (charger_id) REFERENCES chargers(id)
+                FOREIGN KEY (socket_id) REFERENCES sockets(id)
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                charger_id TEXT NOT NULL,
+                socket_id TEXT NOT NULL,
                 contract_id TEXT NOT NULL,
                 start_time TEXT NOT NULL,
                 end_time TEXT,
                 energy_kwh REAL NOT NULL DEFAULT 0,
                 price_dkk REAL NOT NULL DEFAULT 0,
                 status TEXT NOT NULL,
-                FOREIGN KEY (charger_id) REFERENCES chargers(id)
+                FOREIGN KEY (socket_id) REFERENCES sockets(id)
             );
 
+            -- Incidents knyttes til chargeren (charger_id), ikke et enkelt stik.
+            -- En fysisk hændelse (fx "chargeren er væltet") berører hele enheden.
             CREATE TABLE IF NOT EXISTS incidents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 charger_id TEXT NOT NULL,
@@ -73,16 +86,33 @@ def init_db(db_path=DEFAULT_DB_PATH):
         )
 
         db.executemany(
+            "INSERT OR IGNORE INTO chargers (id, name, location) VALUES (?, ?, ?)",
+            [
+                ("CH-001", "Copenhagen City Hub", "Copenhagen"),
+                ("CH-002", "Aarhus Fleet Depot", "Aarhus"),
+                ("CH-003", "Odense Parking East", "Odense"),
+                ("CH-004", "Aalborg Housing Site", "Aalborg"),
+            ],
+        )
+
+        # Demo-stik: CH-001 har 2 stik, CH-002 har 3 stik, CH-003 har 1 stik, CH-004 har 2 stik.
+        # connector_type afspejler hvad der typisk ses på danske ladestationer:
+        # Type2 til AC-opladning, CCS til hurtigopladning (DC).
+        db.executemany(
             """
-            INSERT OR IGNORE INTO chargers
-            (id, name, location, status, max_power_kw, last_heartbeat)
-            VALUES (?, ?, ?, ?, ?, datetime('now'))
+            INSERT OR IGNORE INTO sockets
+            (id, charger_id, socket_number, max_power_kw, status, connector_type, last_heartbeat)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
             """,
             [
-                ("CH-001", "Copenhagen City Hub", "Copenhagen", "available", 22.0),
-                ("CH-002", "Aarhus Fleet Depot", "Aarhus", "available", 50.0),
-                ("CH-003", "Odense Parking East", "Odense", "available", 22.0),
-                ("CH-004", "Aalborg Housing Site", "Aalborg", "available", 11.0),
+                ("CH-001-S1", "CH-001", 1, 22.0,  "available", "Type2"),
+                ("CH-001-S2", "CH-001", 2, 50.0,  "available", "CCS"),
+                ("CH-002-S1", "CH-002", 1, 50.0,  "available", "CCS"),
+                ("CH-002-S2", "CH-002", 2, 50.0,  "available", "CCS"),
+                ("CH-002-S3", "CH-002", 3, 22.0,  "available", "Type2"),
+                ("CH-003-S1", "CH-003", 1, 22.0,  "available", "Type2"),
+                ("CH-004-S1", "CH-004", 1, 11.0,  "available", "Type2"),
+                ("CH-004-S2", "CH-004", 2, 11.0,  "available", "Type2"),
             ],
         )
         db.commit()

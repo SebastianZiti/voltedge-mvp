@@ -21,10 +21,11 @@ Entities har et **id** og kan ændre tilstand. To chargers med samme navn er sta
 
 | Engelsk navn (i koden) | Dansk forklaring | Kode-placering |
 |---|---|---|
-| `Charger` | En fysisk ladestander. Har id, navn, lokation, status og max effekt. | `domain.py`, tabel `chargers` |
-| `ChargingSession` | En ladesession — perioden hvor en bil oplades. Har start, slut, energi, pris og status. | `domain.py`, tabel `sessions` |
-| `TelemetryReading` | Én måling fra en charger på et bestemt tidspunkt (effekt, spænding, strøm, status). | `domain.py`, tabel `telemetry` |
-| `Incident` | En fejl-hændelse oprettet når en charger melder `faulted`. Har beskrivelse, alvorlighed og oprettelses-tid. | `domain.py`, tabel `incidents` |
+| `Charger` | Den fysiske ladestander — den enhed der er boltet fast på væggen eller parkeringspladsen. Har id, navn og lokation. Én charger kan have 1–N stik (Sockets). | `domain.py`, tabel `chargers` |
+| `Socket` | Et enkelt stik/connector på en charger. Det er stikket der har status, max effekt, connector-type og heartbeat — ikke standeren som helhed. To stik på samme charger kan lade to biler samtidigt. | `domain.py`, tabel `sockets` |
+| `ChargingSession` | En ladesession — perioden hvor en bil oplades på et bestemt stik. Har `socket_id`, start, slut, energi, pris og status. | `domain.py`, tabel `sessions` |
+| `TelemetryReading` | Én måling fra et stik på et bestemt tidspunkt (effekt, spænding, strøm, status). Knyttes til `socket_id` — ikke til chargeren som helhed. | `domain.py`, tabel `telemetry` |
+| `Incident` | En fejl-hændelse oprettet når et stik melder `faulted`. Knyttes til `charger_id` fordi en fysisk fejl (fx "standeren er væltet") gælder hele enheden. | `domain.py`, tabel `incidents` |
 
 ## Value Objects (har ingen identitet — kun værdi)
 
@@ -35,7 +36,7 @@ Value objects sammenlignes på **værdi**, ikke id. To `PowerKw(22.0)` er ens. D
 | `PowerKw` | Effekt i kilowatt. | Validerer at effekt ≥ 0. To målinger med samme tal er ens. |
 | `EnergyKwh` | Energi i kilowatt-timer. | Samme idé — kan ikke være negativ. |
 | `MoneyDkk` | Pris i danske kroner. | Domain-rule: ingen negative penge. Skiller "tal" fra "tal med betydning". |
-| `ChargerStatus` (enum) | Stationens drift-tilstand: `available`, `occupied`, `faulted`, `offline`. | Fast lukket værdimængde — kun disse fire tilstande er gyldige. |
+| `ChargerStatus` (enum) | Et stiks drift-tilstand: `available`, `occupied`, `faulted`, `offline`. Sidder på `Socket`, ikke på `Charger`. | Fast lukket værdimængde — kun disse fire tilstande er gyldige. |
 | `SessionStatus` (enum) | Session-tilstand: `active` eller `completed`. | Samme princip. |
 | `LoadForecast` (frozen) | Resultatet af en forecast-beregning: forudsagt kW + model-info + R². | `frozen=True` betyder at man **ikke** kan ændre tallet bagefter — så ingen kan manipulere et forecast efter det er udregnet. |
 
@@ -45,7 +46,7 @@ Et aggregat samler entities/VOs der **skal være konsistente på samme tid**. Vi
 
 | Aggregat | Hvad det indeholder | Hvorfor det er ét aggregat |
 |---|---|---|
-| **Charger-aggregat** | `Charger` + dens åbne `ChargingSession` + dens seneste `TelemetryReading` + eventuelle åbne `Incident`. | Når en session starter, skal chargerens status ændres atomart (ellers kunne to brugere booke samme stander). Det håndteres af `database.transaction()` i `start_session`. |
+| **Charger-aggregat** | `Charger` + dens `Socket`s + åbne `ChargingSession`s + eventuelle åbne `Incident`s. | Når en session starter på et stik, skal stikkets status ændres atomart (ellers kunne to brugere booke samme stik). Det håndteres af `database.transaction()` og "atomic claim" i `start_session`. To stik på samme charger kan have aktive sessioner **samtidigt** — de er uafhængige. |
 
 ## Domain Events (forretningsmæssige kendsgerninger der er sket)
 
@@ -53,10 +54,11 @@ Domain events beskriver hændelser som **forretningen interesserer sig for** —
 
 | Event-navn (i DB) | Hvornår oprettes det | Forretningsmæssig betydning |
 |---|---|---|
-| `ChargerStatusChanged` | Når en chargers status går fra X til Y. | Operationelt skift drift skal vide — fx fra `available` til `occupied`. |
+| `ChargerAdded` | Når en ny charger oprettes via formularen. | En ny ladestander er tilføjet til flåden. |
+| `ChargerStatusChanged` | Når et stiks status går fra X til Y. | Operationelt skift drift skal vide — fx fra `available` til `occupied`. |
 | `SessionStarted` | Ved start af en ladesession. | En kunde er begyndt at lade — billing-relevant. |
 | `SessionEnded` | Ved afslutning af en session (inkl. demo-seed). | Session-data er færdig og kan faktureres. |
-| `IncidentOpened` | Når en charger melder `faulted`. | En fejl er åbnet — drift skal reagere. |
+| `IncidentOpened` | Når et stik melder `faulted`. | En fejl er åbnet på chargeren — drift skal reagere. |
 | `LoadForecastCalculated` | Når `publish_forecast_next_hour` køres. | Et forecast er publiceret som forretningsfaktum (CQRS — den **eneste** skriveoperation for forecast). |
 
 ## Integration Events (tekniske hændelser fra eksterne contexts)
@@ -65,7 +67,7 @@ Et **integration event** kommer udefra (her: simuleret OCPP-telemetri fra ladest
 
 | Event-navn (i DB) | Hvornår oprettes det | Hvorfor det er et integration event |
 |---|---|---|
-| `TelemetryReceived` | Hver gang `simulate_telemetry` skaber en måling. | "Der kom data ind fra hardware" — en teknisk integration mellem OCPP-context og vores Charging Operations Intelligence-context. Forretningen reagerer ikke på hver enkelt måling; den reagerer på de **udledte** domain events (`ChargerStatusChanged`, `IncidentOpened`) som måling kan udløse. |
+| `TelemetryReceived` | Hver gang `simulate_telemetry` skaber en måling per stik. | "Der kom data ind fra hardware" — en teknisk integration mellem OCPP-context og vores Charging Operations Intelligence-context. Forretningen reagerer ikke på hver enkelt måling; den reagerer på de **udledte** domain events (`ChargerStatusChanged`, `IncidentOpened`) som målingen kan udløse. |
 
 > **Hvis censor spørger:** "Er `TelemetryReceived` ikke et domain event når det ligger i `domain_events`-tabellen?"
 >
@@ -75,8 +77,8 @@ Et **integration event** kommer udefra (her: simuleret OCPP-telemetri fra ladest
 
 | Service | Analyse-type | Hvad den svarer på |
 |---|---|---|
-| `calculate_kpis` | Deskriptiv | **Hvad sker der?** — antal chargers, aktive sessions, total energi, uptime, peak load, forecast. |
-| `diagnose_incidents_by_charger` | Diagnostisk | **Hvorfor er uptime ikke 100%?** — bryder incidents ned per charger. |
+| `calculate_kpis` | Deskriptiv | **Hvad sker der?** — antal chargers, antal sockets, occupied sockets (= active sessions), total energi, uptime, peak load, forecast. |
+| `diagnose_incidents_by_charger` | Diagnostisk | **Hvorfor er uptime ikke 100%?** — bryder incidents ned per charger og viser det "dårligste" stik-status på standeren. |
 | `forecast_load_next_hour` | Predictive (ML) | **Hvad vil ske næste time?** — træner scikit-learn `LinearRegression` på (time-index, hour-of-day) → power_kw. |
 | `forecast_next_hour` | Cold-start fallback | Simpel gennemsnit × 1.08 — bruges kun når der er færre end 5 målinger (så ML giver ingen mening). |
 
@@ -86,10 +88,11 @@ Disse er flows på tværs af domain-objekter — typisk én pr. forretnings-hand
 
 | Service | Hvad den gør |
 |---|---|
-| `simulate_telemetry` | Genererer en måling for hver charger + opdaterer status + opretter events (alt i én transaction). |
-| `start_session` | "Atomic claim" på en charger via `UPDATE ... WHERE status='available'` — forhindrer at to brugere booker samme stander. |
-| `end_latest_session` | Afslutter seneste aktive session, henter aktuel el-pris via `price_service`, opdaterer charger til `available`, skriver `SessionEnded`. |
-| `seed_demo_sessions` | Idempotent demo-data: skipper rækker der allerede findes (samme charger + start_time). Henter historisk el-pris per session via `price_service`. |
+| `add_charger` | Opretter en ny charger med 1–N sockets. Genererer sekventielt ID (CH-005, CH-006...) og publicerer `ChargerAdded`-event. Alt i én transaction. |
+| `simulate_telemetry` | Genererer én måling **per socket** (ikke per charger) + opdaterer socket-status + opretter events. Alt i én transaction per stik. |
+| `start_session` | "Atomic claim" på et stik via `UPDATE ... WHERE status='available'` — forhindrer at to brugere booker samme stik. To stik på samme charger kan starte session samtidigt. |
+| `end_latest_session` | Afslutter seneste aktive session, henter aktuel el-pris via `price_service`, opdaterer stikket til `available`, skriver `SessionEnded`. |
+| `seed_demo_sessions` | Idempotent demo-data med overlappende sessioner: CH-001-S1 og CH-001-S2 starter samtidigt for at demonstrere parallel opladning. Skipper rækker der allerede findes. |
 | `publish_forecast_next_hour` | Kører forecastet **og** skriver `LoadForecastCalculated`-event. Den eneste forecast-funktion der ændrer DB (CQRS). |
 
 ## Pris-service (infrastructure layer — kalder eksternt API)
@@ -120,7 +123,7 @@ Disse er flows på tværs af domain-objekter — typisk én pr. forretnings-hand
 | **Cold-start** | Når der er for lidt data til at træne ML — vi falder tilbage til en simpel baseline-beregning. |
 | **Anti-corruption layer** | `/api/powerbi/*`-endpoints. Power BI læser **ikke** SQLite direkte; den får en stabil JSON-kontrakt, så vi kan ændre DB-skemaet uden at bryde rapporten. |
 | **Bounded Context Map** | Diagrammet i `ARCHITECTURE.md` der viser hvilke andre contexts MVP'en taler med (OCPP + elprisenligenu.dk upstream, Billing/Partner downstream, Power BI som ACL-konsument). |
-| **Negativ spot-pris** | Reelt dansk fænomen: når solceller producerer mere end forbruget, kan timeprisen blive negativ. Vi flooor til 0 så MVP'en ikke modellerer "appen betaler kunden" — men det er en god demo-pointe at det forekommer. |
+| **Negativ spot-pris** | Reelt dansk fænomen: når solceller producerer mere end forbruget, kan timeprisen blive negativ. Vi floor til 0 så MVP'en ikke modellerer "appen betaler kunden" — men det er en god demo-pointe at det forekommer. |
 | **Fallback-strategi** | Hvis `elprisenligenu.dk` ikke svarer, returnerer `price_service` konstanten 3.25 DKK/kWh. Vi logger en warning, men appen fortsætter. Det gør MVP'en **resilient** — censor-demo virker også uden internet. |
 | **Cache pr. (dato, region)** | `price_service` gemmer API-svaret i en in-memory dict. Forhindrer at vi spammer API'et — én cache-entry dækker alle 24 timer for dagen for én region. |
 
@@ -128,8 +131,8 @@ Disse er flows på tværs af domain-objekter — typisk én pr. forretnings-hand
 
 Når censor spørger om et begreb, kan jeg:
 
-1. **Pege på koden** ("`ChargingSession` ligger i `domain.py` linje 100"),
-2. **Forklare med min egen analogi** ("Det er som en kvittering — den får et id når kunden starter, og lukkes når kunden går"),
-3. **Vise hvor det bruges** ("Den oprettes af `start_session` og lukkes af `end_latest_session`").
+1. **Pege på koden** ("`Socket` ligger i `domain.py`, tabel `sockets`"),
+2. **Forklare med min egen analogi** ("En `Charger` er selve standerskabet — `Socket` er de enkelte stik i det. Ligesom en fordelerskasse har én kasse med flere stik i"),
+3. **Vise hvor det bruges** ("Sessioner og telemetri peger på `socket_id` — fordi det er stikket der lader, ikke hele standerskabet").
 
 Det er det Ubiquitous Language gør for et eksamens-forsvar: **én term, ét sted, én forklaring**.

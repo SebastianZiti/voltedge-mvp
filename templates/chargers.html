@@ -8,30 +8,161 @@
     </div>
 </section>
 
-<section class="panel">
+{% for charger in chargers %}
+<section class="panel" style="margin-bottom: 1.5rem;">
+    <div class="section-title" style="margin-bottom: 0.75rem;">
+        <div>
+            <strong>{{ charger.name }}</strong>
+            <span style="color: var(--muted); margin-left: 1rem;">{{ charger.id }}</span>
+        </div>
+        <span style="color: var(--muted);">{{ charger.location }}</span>
+    </div>
     <table>
         <thead>
             <tr>
-                <th>ID</th>
-                <th>Name</th>
-                <th>Location</th>
+                <th>Socket ID</th>
+                <th>No.</th>
+                <th>Connector</th>
+                <th>Max kW</th>
                 <th>Status</th>
-                <th>Max power</th>
                 <th>Last heartbeat</th>
             </tr>
         </thead>
         <tbody>
-            {% for charger in chargers %}
+            {% for sock in charger.sockets %}
             <tr>
-                <td>{{ charger.id }}</td>
-                <td>{{ charger.name }}</td>
-                <td>{{ charger.location }}</td>
-                <td><span class="status {{ charger.status }}">{{ charger.status }}</span></td>
-                <td>{{ charger.max_power_kw }} kW</td>
-                <td>{{ charger.last_heartbeat }}</td>
+                <td style="font-family: monospace; font-size: 0.85rem;">{{ sock.id }}</td>
+                <td>{{ sock.socket_number }}</td>
+                <td>{{ sock.connector_type }}</td>
+                <td>{{ sock.max_power_kw }} kW</td>
+                <td><span class="status {{ sock.status }}">{{ sock.status }}</span></td>
+                <td>{{ sock.last_heartbeat }}</td>
             </tr>
+            {% else %}
+            <tr><td colspan="6">No sockets registered.</td></tr>
             {% endfor %}
         </tbody>
     </table>
 </section>
+{% else %}
+<section class="panel">
+    <p>No chargers yet. Add the first one below.</p>
+</section>
+{% endfor %}
+
+<section class="panel" style="margin-top: 2rem;">
+    <h3 style="margin-bottom: 1rem;">Add new charger</h3>
+    <form method="POST" action="{{ url_for('add_charger_form') }}" id="add-charger-form">
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+            <div>
+                <label style="display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: var(--muted);">Charger name</label>
+                <input
+                    type="text"
+                    name="name"
+                    placeholder="e.g. Vesterbro Parking House"
+                    required
+                    style="width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; background: var(--bg); color: var(--text);"
+                >
+            </div>
+            <div>
+                <label style="display: block; margin-bottom: 0.25rem; font-size: 0.875rem; color: var(--muted);">Location</label>
+                <input
+                    type="text"
+                    name="location"
+                    placeholder="e.g. Copenhagen"
+                    required
+                    style="width: 100%; padding: 0.5rem 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; background: var(--bg); color: var(--text);"
+                >
+            </div>
+        </div>
+
+        <div style="margin-bottom: 0.75rem;">
+            <label style="font-size: 0.875rem; color: var(--muted);">Sockets</label>
+        </div>
+
+        <div id="sockets-container">
+            <div class="socket-row" style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
+                <span style="font-size: 0.85rem; color: var(--muted); min-width: 4rem;">Socket 1</span>
+                <input
+                    type="number"
+                    name="socket_max_power[]"
+                    value="22"
+                    min="1"
+                    max="350"
+                    required
+                    style="width: 90px; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; background: var(--bg); color: var(--text);"
+                >
+                <span style="font-size: 0.85rem; color: var(--muted);">kW</span>
+                <select
+                    name="socket_connector_type[]"
+                    style="padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; background: var(--bg); color: var(--text);"
+                >
+                    <option value="Type2">Type 2 (AC)</option>
+                    <option value="CCS">CCS (DC fast)</option>
+                    <option value="CHAdeMO">CHAdeMO</option>
+                    <option value="Type1">Type 1</option>
+                </select>
+            </div>
+        </div>
+
+        <div style="display: flex; gap: 0.75rem; margin-top: 1rem; align-items: center;">
+            <button
+                type="button"
+                onclick="addSocketRow()"
+                style="padding: 0.4rem 0.9rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); cursor: pointer; font-size: 0.875rem;"
+            >+ Add socket</button>
+            <button
+                type="submit"
+                class="primary"
+            >Create charger</button>
+        </div>
+    </form>
+</section>
+
+<script>
+function addSocketRow() {
+    const container = document.getElementById('sockets-container');
+    const count = container.querySelectorAll('.socket-row').length + 1;
+    const row = document.createElement('div');
+    row.className = 'socket-row';
+    row.style.cssText = 'display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;';
+    row.innerHTML = `
+        <span style="font-size: 0.85rem; color: var(--muted); min-width: 4rem;">Socket ${count}</span>
+        <input
+            type="number"
+            name="socket_max_power[]"
+            value="22"
+            min="1"
+            max="350"
+            required
+            style="width: 90px; padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; background: var(--bg); color: var(--text);"
+        >
+        <span style="font-size: 0.85rem; color: var(--muted);">kW</span>
+        <select
+            name="socket_connector_type[]"
+            style="padding: 0.4rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; font-size: 0.9rem; background: var(--bg); color: var(--text);"
+        >
+            <option value="Type2">Type 2 (AC)</option>
+            <option value="CCS">CCS (DC fast)</option>
+            <option value="CHAdeMO">CHAdeMO</option>
+            <option value="Type1">Type 1</option>
+        </select>
+        <button
+            type="button"
+            onclick="this.closest('.socket-row').remove(); renumberSockets();"
+            style="padding: 0.3rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--muted); cursor: pointer; font-size: 0.875rem;"
+        >−</button>
+    `;
+    container.appendChild(row);
+}
+
+function renumberSockets() {
+    const rows = document.querySelectorAll('.socket-row');
+    rows.forEach((row, i) => {
+        const label = row.querySelector('span');
+        if (label) label.textContent = 'Socket ' + (i + 1);
+    });
+}
+</script>
 {% endblock %}

@@ -18,8 +18,12 @@
 
 <section class="metrics">
     <article>
-        <span>Total chargers</span>
+        <span>Chargers</span>
         <strong>{{ kpis.charger_count }}</strong>
+    </article>
+    <article>
+        <span>Sockets</span>
+        <strong>{{ kpis.socket_count }}</strong>
     </article>
     <article>
         <span>Active sessions</span>
@@ -50,8 +54,8 @@
                 <tr>
                     <th>Charger</th>
                     <th>Location</th>
-                    <th>Status</th>
-                    <th>Max kW</th>
+                    <th>Sockets</th>
+                    <th>Faulted</th>
                 </tr>
             </thead>
             <tbody>
@@ -59,8 +63,8 @@
                 <tr>
                     <td>{{ charger.name }}</td>
                     <td>{{ charger.location }}</td>
-                    <td><span class="status {{ charger.status }}">{{ charger.status }}</span></td>
-                    <td>{{ charger.max_power_kw }}</td>
+                    <td>{{ charger.sockets | length }}</td>
+                    <td>{{ charger.sockets | selectattr("status", "equalto", "faulted") | list | length }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -74,7 +78,7 @@
         <table>
             <thead>
                 <tr>
-                    <th>Charger</th>
+                    <th>Socket</th>
                     <th>Power</th>
                     <th>Status</th>
                     <th>Time</th>
@@ -83,7 +87,7 @@
             <tbody>
                 {% for row in telemetry %}
                 <tr>
-                    <td>{{ row.charger_id }}</td>
+                    <td>{{ row.socket_id }}</td>
                     <td>{{ row.power_kw }} kW</td>
                     <td><span class="status {{ row.status }}">{{ row.status }}</span></td>
                     <td>{{ row.timestamp }}</td>

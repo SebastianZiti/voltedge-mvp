@@ -17,6 +17,7 @@ from domain import (
     MoneyDkk,
     PowerKw,
     SessionStatus,
+    Socket,
     TelemetryReading,
 )
 
@@ -27,9 +28,59 @@ FORECAST_GROWTH_FACTOR = 1.08
 
 
 def list_chargers(db_path=database.DEFAULT_DB_PATH):
-    return database.query_all(
+    chargers = database.query_all(
         "SELECT * FROM chargers ORDER BY id",
         db_path=db_path,
+    )
+    sockets = database.query_all(
+        "SELECT * FROM sockets ORDER BY charger_id, socket_number",
+        db_path=db_path,
+    )
+    sockets_by_charger = {}
+    for sock in sockets:
+        sockets_by_charger.setdefault(sock["charger_id"], []).append(sock)
+    for charger in chargers:
+        charger["sockets"] = sockets_by_charger.get(charger["id"], [])
+    return chargers
+
+
+def add_charger(name, location, sockets, db_path=database.DEFAULT_DB_PATH):
+    charger_id = _next_charger_id(db_path)
+    now = datetime.now().isoformat(timespec="seconds")
+
+    with database.transaction(db_path) as db:
+        db.execute(
+            "INSERT INTO chargers (id, name, location) VALUES (?, ?, ?)",
+            (charger_id, name, location),
+        )
+        for i, sock in enumerate(sockets, 1):
+            socket_id = f"{charger_id}-S{i}"
+            db.execute(
+                """
+                INSERT INTO sockets
+                (id, charger_id, socket_number, max_power_kw, status, connector_type, last_heartbeat)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    socket_id, charger_id, i,
+                    float(sock["max_power_kw"]),
+                    ChargerStatus.AVAILABLE.value,
+                    sock.get("connector_type", "Type2"),
+                    now,
+                ),
+            )
+        db.execute(
+            "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
+            (
+                "ChargerAdded",
+                charger_id,
+                f"Charger '{name}' added at {location} with {len(sockets)} socket(s)",
+                now,
+            ),
+        )
+
+    return database.query_one(
+        "SELECT * FROM chargers WHERE id = ?", (charger_id,), db_path=db_path
     )
 
 
@@ -57,10 +108,11 @@ def list_domain_events(limit=25, db_path=database.DEFAULT_DB_PATH):
 
 
 def simulate_telemetry(db_path=database.DEFAULT_DB_PATH):
-    chargers = [_charger_from_row(row) for row in list_chargers(db_path)]
+    sockets = database.query_all("SELECT * FROM sockets ORDER BY id", db_path=db_path)
     created = []
 
-    for charger in chargers:
+    for sock_row in sockets:
+        socket = _socket_from_row(sock_row)
         status = ChargerStatus(
             random.choices(
                 [s.value for s in ChargerStatus],
@@ -68,13 +120,17 @@ def simulate_telemetry(db_path=database.DEFAULT_DB_PATH):
                 k=1,
             )[0]
         )
-        max_power = float(charger.max_power_kw)
-        power_kw = 0 if status in {ChargerStatus.AVAILABLE, ChargerStatus.FAULTED, ChargerStatus.OFFLINE} else round(random.uniform(4, max_power), 2)
+        max_power = float(socket.max_power_kw)
+        power_kw = (
+            0 if status in {ChargerStatus.AVAILABLE, ChargerStatus.FAULTED, ChargerStatus.OFFLINE}
+            else round(random.uniform(4, max_power), 2)
+        )
         voltage = 0 if status == ChargerStatus.OFFLINE else round(random.uniform(220, 240), 1)
         current = 0 if voltage == 0 else round((power_kw * 1000) / voltage, 1)
         timestamp = datetime.now()
+
         reading = TelemetryReading(
-            charger_id=charger.id,
+            socket_id=socket.id,
             power_kw=PowerKw(power_kw),
             voltage=voltage,
             current=current,
@@ -85,90 +141,89 @@ def simulate_telemetry(db_path=database.DEFAULT_DB_PATH):
 
         with database.transaction(db_path) as db:
             db.execute(
-                "INSERT INTO telemetry (charger_id, power_kw, voltage, current, status, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-                (record["charger_id"], record["power_kw"], record["voltage"], record["current"], record["status"], record["timestamp"]),
+                "INSERT INTO telemetry (socket_id, power_kw, voltage, current, status, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                (record["socket_id"], record["power_kw"], record["voltage"], record["current"], record["status"], record["timestamp"]),
             )
             db.execute(
-                "UPDATE chargers SET status = ?, last_heartbeat = ? WHERE id = ?",
-                (status.value, record["timestamp"], charger.id),
+                "UPDATE sockets SET status = ?, last_heartbeat = ? WHERE id = ?",
+                (status.value, record["timestamp"], socket.id),
             )
             db.execute(
                 "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
                 (
                     "TelemetryReceived",
-                    charger.id,
-                    f"{charger.id} reported {status.value} at {reading.power_kw.to_float()} kW",
+                    socket.id,
+                    f"{socket.id} reported {status.value} at {reading.power_kw.to_float()} kW",
                     record["timestamp"],
                 ),
             )
-            if charger.status != status:
+            if socket.status != status:
                 db.execute(
                     "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
                     (
                         "ChargerStatusChanged",
-                        charger.id,
-                        f"{charger.id} changed from {charger.status.value} to {status.value}",
+                        socket.id,
+                        f"{socket.id} changed from {socket.status.value} to {status.value}",
                         record["timestamp"],
                     ),
                 )
             if status == ChargerStatus.FAULTED:
                 db.execute(
                     "INSERT INTO incidents (charger_id, description, severity, created_at) VALUES (?, ?, ?, ?)",
-                    (charger.id, "Simulated charger fault from telemetry", "medium", record["timestamp"]),
+                    (socket.charger_id, f"Simulated fault on socket {socket.id}", "medium", record["timestamp"]),
                 )
                 db.execute(
                     "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
-                    ("IncidentOpened", charger.id, f"Incident opened for {charger.id}", record["timestamp"]),
+                    ("IncidentOpened", socket.charger_id, f"Incident opened for {socket.charger_id}", record["timestamp"]),
                 )
 
-        created.append({"charger_id": charger.id, "status": status.value, "power_kw": reading.power_kw.to_float()})
+        created.append({"socket_id": socket.id, "status": status.value, "power_kw": reading.power_kw.to_float()})
 
     return created
 
 
-def start_session(charger_id=None, db_path=database.DEFAULT_DB_PATH):
+def start_session(socket_id=None, db_path=database.DEFAULT_DB_PATH):
     now = datetime.now()
     heartbeat = now.isoformat(timespec="seconds")
 
     with database.transaction(db_path) as db:
-        if charger_id:
+        if socket_id:
             row = db.execute(
-                "SELECT * FROM chargers WHERE id = ? AND status = 'available'",
-                (charger_id,),
+                "SELECT * FROM sockets WHERE id = ? AND status = 'available'",
+                (socket_id,),
             ).fetchone()
         else:
             row = db.execute(
-                "SELECT * FROM chargers WHERE status = 'available' ORDER BY id LIMIT 1"
+                "SELECT * FROM sockets WHERE status = 'available' ORDER BY id LIMIT 1"
             ).fetchone()
 
         if not row:
             return None
 
-        charger = _charger_from_row(row)
-        if not charger.can_start_session():
+        socket = _socket_from_row(row)
+        if not socket.can_start_session():
             return None
 
-        # Atomic claim: vi opdaterer KUN hvis chargeren stadig er 'available'.
-        # Hvis en anden bruger nåede at booke den først, opdateres 0 rækker, og
-        # vi giver op. Forhindrer at to sessions kan starte på samme charger.
+        # Atomic claim: only update if socket is still 'available'.
+        # Prevents two sessions starting on the same socket (race condition).
         claim = db.execute(
-            "UPDATE chargers SET status = ?, last_heartbeat = ? WHERE id = ? AND status = 'available'",
-            (ChargerStatus.OCCUPIED.value, heartbeat, charger.id),
+            "UPDATE sockets SET status = ?, last_heartbeat = ? WHERE id = ? AND status = 'available'",
+            (ChargerStatus.OCCUPIED.value, heartbeat, socket.id),
         )
         if claim.rowcount == 0:
-            return None  # En anden tog chargeren imens
+            return None
 
-        session = ChargingSession.start(charger.id, DEMO_CONTRACT_ID, now)
+        session = ChargingSession.start(socket.id, DEMO_CONTRACT_ID, now)
         record = session.to_record()
         cursor = db.execute(
-            "INSERT INTO sessions (charger_id, contract_id, start_time, status) VALUES (?, ?, ?, ?)",
-            (record["charger_id"], record["contract_id"], record["start_time"], record["status"]),
+            "INSERT INTO sessions (socket_id, contract_id, start_time, status) VALUES (?, ?, ?, ?)",
+            (record["socket_id"], record["contract_id"], record["start_time"], record["status"]),
         )
         session_id = cursor.lastrowid
 
         db.execute(
             "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
-            ("SessionStarted", str(session_id), f"Session {session_id} started on {charger.id}", heartbeat),
+            ("SessionStarted", str(session_id), f"Session {session_id} started on {socket.id}", heartbeat),
         )
 
     return database.query_one("SELECT * FROM sessions WHERE id = ?", (session_id,), db_path=db_path)
@@ -187,13 +242,20 @@ def end_latest_session(db_path=database.DEFAULT_DB_PATH):
 
         session = _session_from_row(row)
 
-        # Hent aktuel el-pris for chargerens region (Koebenhavn=DK2, resten=DK1).
-        # Hvis API'et er nede, falder price_service tilbage til en konstant - saa
-        # session-afslutningen virker stadig selv uden internet.
-        charger_row = db.execute(
-            "SELECT location FROM chargers WHERE id = ?", (session.charger_id,)
+        socket_row = db.execute(
+            """
+            SELECT c.location
+            FROM sockets s
+            JOIN chargers c ON s.charger_id = c.id
+            WHERE s.id = ?
+            """,
+            (session.socket_id,),
         ).fetchone()
-        region = price_service.get_region_for_location(charger_row["location"]) if charger_row else price_service.DEFAULT_REGION
+        region = (
+            price_service.get_region_for_location(socket_row["location"])
+            if socket_row
+            else price_service.DEFAULT_REGION
+        )
         price_per_kwh = price_service.get_price_per_kwh(region, now)
 
         completed = session.complete(now, EnergyKwh(round(random.uniform(8, 38), 2)), price_per_kwh)
@@ -204,8 +266,8 @@ def end_latest_session(db_path=database.DEFAULT_DB_PATH):
             (record["end_time"], record["energy_kwh"], record["price_dkk"], record["status"], completed.id),
         )
         db.execute(
-            "UPDATE chargers SET status = ?, last_heartbeat = ? WHERE id = ?",
-            (ChargerStatus.AVAILABLE.value, record["end_time"], completed.charger_id),
+            "UPDATE sockets SET status = ?, last_heartbeat = ? WHERE id = ?",
+            (ChargerStatus.AVAILABLE.value, record["end_time"], completed.socket_id),
         )
         db.execute(
             "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
@@ -222,58 +284,59 @@ def end_latest_session(db_path=database.DEFAULT_DB_PATH):
 
 
 def seed_demo_sessions(db_path=database.DEFAULT_DB_PATH):
-    chargers = [_charger_from_row(row) for row in list_chargers(db_path)]
+    # Demo plan shows multiple sockets on the SAME charger running simultaneously.
+    # CH-001-S1 and CH-001-S2 both start 4 hours ago — overlapping sessions.
+    # CH-002-S1, S2 and S3 all start 6 hours ago — three concurrent sessions.
+    chargers = {c["id"]: c for c in database.query_all("SELECT * FROM chargers", db_path=db_path)}
+    sockets = {s["id"]: s for s in database.query_all("SELECT * FROM sockets", db_path=db_path)}
+
     base_time = datetime.now().replace(minute=0, second=0, microsecond=0)
     demo_plan = [
-        ("CH-001", 32, 18.4, 6),
-        ("CH-001", 48, 31.2, 4),
-        ("CH-002", 24, 26.8, 8),
-        ("CH-002", 42, 44.7, 5),
-        ("CH-002", 36, 39.5, 2),
-        ("CH-003", 28, 15.9, 7),
-        ("CH-003", 35, 21.6, 3),
-        ("CH-004", 55, 10.8, 9),
-        ("CH-004", 44, 12.4, 1),
+        ("CH-001-S1", 50, 18.4, 4),
+        ("CH-001-S2", 65, 31.2, 4),
+        ("CH-002-S1", 40, 26.8, 6),
+        ("CH-002-S2", 55, 44.7, 6),
+        ("CH-002-S3", 35, 39.5, 6),
+        ("CH-003-S1", 28, 15.9, 7),
+        ("CH-003-S1", 35, 21.6, 3),
+        ("CH-004-S1", 55, 10.8, 9),
+        ("CH-004-S2", 44, 12.4, 9),
     ]
     created = []
 
-    chargers_by_id = {charger.id: charger for charger in chargers}
-    for charger_id, duration_minutes, energy_kwh, hours_ago in demo_plan:
-        if charger_id not in chargers_by_id:
+    for socket_id, duration_minutes, energy_kwh, hours_ago in demo_plan:
+        if socket_id not in sockets:
             continue
+
         start_time = base_time - timedelta(hours=hours_ago)
         end_time = start_time + timedelta(minutes=duration_minutes)
 
-        # Idempotency-check: hvis en demo-session med samme charger og
-        # start_time allerede findes, springer vi INSERT over. Uden denne
-        # vagt ville hvert klik paa "Generate demo sessions"-knappen
-        # oprette identiske dubletter, fordi base_time rundes til hele
-        # timer og demo_plan er statisk.
         existing = database.query_one(
-            "SELECT id FROM sessions WHERE charger_id = ? AND contract_id = ? AND start_time = ?",
-            (charger_id, DEMO_CONTRACT_ID, start_time.isoformat(timespec="seconds")),
+            "SELECT id FROM sessions WHERE socket_id = ? AND contract_id = ? AND start_time = ?",
+            (socket_id, DEMO_CONTRACT_ID, start_time.isoformat(timespec="seconds")),
             db_path=db_path,
         )
         if existing is not None:
             continue
 
-        # Hent historisk pris for den time sessionen sluttede.
-        # API'et returnerer hele dagens 24 timer, og price_service finder den rigtige.
-        region = price_service.get_region_for_location(chargers_by_id[charger_id].location)
+        charger_id = sockets[socket_id]["charger_id"]
+        charger = chargers.get(charger_id)
+        region = (
+            price_service.get_region_for_location(charger["location"])
+            if charger
+            else price_service.DEFAULT_REGION
+        )
         price_per_kwh = price_service.get_price_per_kwh(region, end_time)
         price_dkk = round(energy_kwh * price_per_kwh, 2)
 
-        # Transaction sikrer at session OG dens domain event gemmes sammen.
-        # Hvis processen doer mellem de to INSERTs, rulles begge tilbage,
-        # saa vi aldrig ender med en session uden tilhoerende SessionEnded-event.
         with database.transaction(db_path) as db:
             cursor = db.execute(
                 """
-                INSERT INTO sessions (charger_id, contract_id, start_time, end_time, energy_kwh, price_dkk, status)
+                INSERT INTO sessions (socket_id, contract_id, start_time, end_time, energy_kwh, price_dkk, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    charger_id,
+                    socket_id,
                     DEMO_CONTRACT_ID,
                     start_time.isoformat(timespec="seconds"),
                     end_time.isoformat(timespec="seconds"),
@@ -292,34 +355,34 @@ def seed_demo_sessions(db_path=database.DEFAULT_DB_PATH):
                     end_time.isoformat(timespec="seconds"),
                 ),
             )
-        created.append({"id": session_id, "charger_id": charger_id, "energy_kwh": energy_kwh, "price_dkk": price_dkk})
+        created.append({"id": session_id, "socket_id": socket_id, "energy_kwh": energy_kwh, "price_dkk": price_dkk})
 
     return created
 
 
 def calculate_kpis(db_path=database.DEFAULT_DB_PATH):
     chargers = list_chargers(db_path)
+    all_sockets = database.query_all("SELECT * FROM sockets", db_path=db_path)
     sessions = list_sessions(db_path)
     telemetry = list_telemetry(500, db_path)
     incidents = database.query_all("SELECT * FROM incidents", db_path=db_path)
 
     total_energy = sum(float(row["energy_kwh"]) for row in sessions)
-    active_sessions = len([row for row in sessions if row["status"] == "active"])
-    faulted_chargers = len([row for row in chargers if row["status"] == "faulted"])
-    operational_chargers = len([row for row in chargers if row["status"] in {"available", "occupied"}])
-    uptime_percent = round((operational_chargers / len(chargers)) * 100, 1) if chargers else 0
+    active_sessions = len([row for row in all_sockets if row["status"] == "occupied"])
+    faulted_sockets = len([row for row in all_sockets if row["status"] == "faulted"])
+    operational_sockets = len([row for row in all_sockets if row["status"] in {"available", "occupied"}])
+    uptime_percent = round((operational_sockets / len(all_sockets)) * 100, 1) if all_sockets else 0
     peak_load_kw = max([float(row["power_kw"]) for row in telemetry], default=0)
 
     return {
         "charger_count": len(chargers),
+        "socket_count": len(all_sockets),
         "active_sessions": active_sessions,
         "total_energy_kwh": round(total_energy, 2),
-        "faulted_chargers": faulted_chargers,
+        "faulted_sockets": faulted_sockets,
         "incident_count": len(incidents),
         "uptime_percent": uptime_percent,
         "peak_load_kw": round(peak_load_kw, 2),
-        # KPI-feltet bruger ML-domain-servicen (samme tal som Analytics-siden),
-        # saa dashboard, KPI-API og PowerBI-summary aldrig viser forskellige forecasts.
         "forecast_next_hour_kw": forecast_load_next_hour(db_path).next_hour_kw,
     }
 
@@ -342,8 +405,7 @@ def forecast_next_hour(db_path=database.DEFAULT_DB_PATH):
 
 
 def forecast_load_next_hour(db_path=database.DEFAULT_DB_PATH):
-    # ML domain service: forudsiger næste times belastning.
-    # Henter alle telemetri-aflæsninger hvor chargeren faktisk ladede (status = 'occupied').
+    # ML domain service: predicts next hour load.
     rows = database.query_all(
         """
         SELECT power_kw, timestamp
@@ -355,8 +417,7 @@ def forecast_load_next_hour(db_path=database.DEFAULT_DB_PATH):
     )
     sample_size = len(rows)
 
-    # Cold-start: hvis der er for få datapunkter falder vi tilbage til
-    # et simpelt gennemsnit. Det giver ingen mening at træne en model på 2 målinger.
+    # Cold-start: too few data points → fall back to simple mean.
     if sample_size < FORECAST_MIN_SAMPLES:
         return LoadForecast(
             next_hour_kw=forecast_next_hour(db_path),
@@ -364,32 +425,24 @@ def forecast_load_next_hour(db_path=database.DEFAULT_DB_PATH):
             sample_size=sample_size,
         )
 
-    # Feature engineering: for hver måling laver vi 2 features.
-    # feats = [[time_index, hour_of_day], ...]   <- input til modellen (X)
-    # targets = [power_kw, ...]                   <- det vi vil forudsige (y)
     feats = []
     targets = []
     for index, row in enumerate(rows):
         ts = datetime.fromisoformat(row["timestamp"])
-        feats.append([index, ts.hour])  # time_index = trend, hour = døgnmønster
+        feats.append([index, ts.hour])
         targets.append(float(row["power_kw"]))
 
-    # Træning: sklearn lærer en linje gennem datapunkterne.
-    # Modellen kan derefter forudsige y for nye X-værdier.
     X = np.array(feats, dtype=float)
     y = np.array(targets, dtype=float)
     model = LinearRegression().fit(X, y)
 
-    # Prediction: hvad ville modellen forudsige for "næste måling, næste time"?
     last_ts = datetime.fromisoformat(rows[-1]["timestamp"])
     next_hour = (last_ts.hour + 1) % 24
     prediction = float(model.predict(np.array([[sample_size, next_hour]]))[0])
-
-    # R²: kvalitetsmål (0-1). Tæt på 1 = modellen forklarer dataene godt.
     r2 = float(model.score(X, y))
 
     return LoadForecast(
-        next_hour_kw=round(max(prediction, 0.0), 2),  # kan ikke være negativ
+        next_hour_kw=round(max(prediction, 0.0), 2),
         model="LinearRegression",
         sample_size=sample_size,
         r2_score=round(r2, 3),
@@ -414,24 +467,32 @@ def publish_forecast_next_hour(db_path=database.DEFAULT_DB_PATH):
 
 
 def diagnose_incidents_by_charger(db_path=database.DEFAULT_DB_PATH):
-    # Diagnostisk domain service: besvarer "HVORFOR er driften ikke 100%?" ved at
-    # bryde incidents ned per charger. Det er forskelligt fra deskriptiv analyse
-    # (som kun siger HVOR MANGE incidents der er) og predictive (som forudsiger
-    # belastning). LEFT JOIN sikrer at chargers UDEN incidents ogsa kommer med
-    # (med count = 0), sa man ser den fulde flade.
+    # Diagnostic domain service: per-charger incident breakdown.
+    # status = worst socket status on the charger (faulted > offline > occupied > available).
     rows = database.query_all(
         """
         SELECT c.id AS charger_id,
+               c.name,
                c.location,
-               c.status,
-               COUNT(i.id) AS incident_count,
+               COUNT(DISTINCT i.id) AS incident_count,
                MAX(i.created_at) AS last_incident_at,
                (
                    SELECT description FROM incidents
                    WHERE charger_id = c.id
                    ORDER BY created_at DESC
                    LIMIT 1
-               ) AS last_description
+               ) AS last_description,
+               COALESCE(
+                   (SELECT s.status FROM sockets s
+                    WHERE s.charger_id = c.id
+                    ORDER BY CASE s.status
+                        WHEN 'faulted'  THEN 0
+                        WHEN 'offline'  THEN 1
+                        WHEN 'occupied' THEN 2
+                        ELSE 3 END
+                    LIMIT 1),
+                   'unknown'
+               ) AS status
         FROM chargers c
         LEFT JOIN incidents i ON i.charger_id = c.id
         GROUP BY c.id
@@ -445,18 +506,21 @@ def diagnose_incidents_by_charger(db_path=database.DEFAULT_DB_PATH):
 def build_powerbi_report_rows(db_path=database.DEFAULT_DB_PATH):
     rows = []
 
-    for charger in list_chargers(db_path):
+    for sock in database.query_all(
+        "SELECT s.*, c.location FROM sockets s JOIN chargers c ON s.charger_id = c.id",
+        db_path=db_path,
+    ):
         rows.append(
             {
                 "dataset": "charger",
-                "record_id": charger["id"],
-                "charger_id": charger["id"],
-                "location": charger["location"],
-                "status": charger["status"],
+                "record_id": sock["id"],
+                "charger_id": sock["id"],
+                "location": sock["location"],
+                "status": sock["status"],
                 "metric": "max_power_kw",
-                "value": charger["max_power_kw"],
-                "timestamp": charger["last_heartbeat"],
-                "description": charger["name"],
+                "value": sock["max_power_kw"],
+                "timestamp": sock["last_heartbeat"],
+                "description": f'{sock["connector_type"]} socket {sock["socket_number"]} on {sock["charger_id"]}',
             }
         )
 
@@ -465,7 +529,7 @@ def build_powerbi_report_rows(db_path=database.DEFAULT_DB_PATH):
             {
                 "dataset": "telemetry",
                 "record_id": telemetry["id"],
-                "charger_id": telemetry["charger_id"],
+                "charger_id": telemetry["socket_id"],
                 "location": "",
                 "status": telemetry["status"],
                 "metric": "power_kw",
@@ -480,7 +544,7 @@ def build_powerbi_report_rows(db_path=database.DEFAULT_DB_PATH):
             {
                 "dataset": "session",
                 "record_id": session["id"],
-                "charger_id": session["charger_id"],
+                "charger_id": session["socket_id"],
                 "location": "",
                 "status": session["status"],
                 "metric": "energy_kwh",
@@ -532,18 +596,33 @@ def build_powerbi_summary(db_path=database.DEFAULT_DB_PATH):
 
     return {
         "charger_count": kpis["charger_count"],
+        "socket_count": kpis["socket_count"],
         "active_sessions": len(active_sessions),
         "completed_sessions": len(completed_sessions),
         "total_sessions": len(sessions),
         "total_energy_kwh": kpis["total_energy_kwh"],
         "peak_load_kw": kpis["peak_load_kw"],
         "uptime_percent": kpis["uptime_percent"],
-        "faulted_chargers": kpis["faulted_chargers"],
+        "faulted_chargers": kpis["faulted_sockets"],
         "incident_count": kpis["incident_count"],
         "forecast_next_hour_kw": kpis["forecast_next_hour_kw"],
         "telemetry_readings": len(telemetry),
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
+
+
+def _next_charger_id(db_path):
+    # Generates sequential IDs: CH-005, CH-006, etc. based on existing chargers.
+    rows = database.query_all("SELECT id FROM chargers ORDER BY id", db_path=db_path)
+    max_num = 0
+    for row in rows:
+        parts = row["id"].split("-")
+        if len(parts) == 2 and parts[0] == "CH":
+            try:
+                max_num = max(max_num, int(parts[1]))
+            except ValueError:
+                pass
+    return f"CH-{max_num + 1:03d}"
 
 
 def _record_domain_event(event, db_path):
@@ -558,21 +637,30 @@ def _record_domain_event(event, db_path):
     )
 
 
+def _socket_from_row(row):
+    return Socket(
+        id=row["id"],
+        charger_id=row["charger_id"],
+        socket_number=int(row["socket_number"]),
+        max_power_kw=float(row["max_power_kw"]),
+        status=ChargerStatus(row["status"]),
+        connector_type=row["connector_type"],
+        last_heartbeat=row["last_heartbeat"],
+    )
+
+
 def _charger_from_row(row):
     return Charger(
         id=row["id"],
         name=row["name"],
         location=row["location"],
-        status=ChargerStatus(row["status"]),
-        max_power_kw=float(row["max_power_kw"]),
-        last_heartbeat=row["last_heartbeat"],
     )
 
 
 def _session_from_row(row):
     return ChargingSession(
         id=row["id"],
-        charger_id=row["charger_id"],
+        socket_id=row["socket_id"],
         contract_id=row["contract_id"],
         start_time=datetime.fromisoformat(row["start_time"]),
         end_time=datetime.fromisoformat(row["end_time"]) if row["end_time"] else None,

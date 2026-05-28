@@ -27,8 +27,8 @@
         <strong>{{ forecast.sample_size }}</strong>
     </article>
     <article>
-        <span>Faulted chargers</span>
-        <strong>{{ kpis.faulted_chargers }}</strong>
+        <span>Faulted sockets</span>
+        <strong>{{ kpis.faulted_sockets }}</strong>
     </article>
     <article>
         <span>Incidents</span>
@@ -42,17 +42,12 @@
 
 <section class="panel">
     <h3>Diagnostics — incidents per charger</h3>
-    <p>
-        Diagnostic domain service answering <em>why</em> uptime is not 100% by attributing
-        incidents to specific chargers. The descriptive KPIs above count incidents in total;
-        this view shows which chargers are responsible.
-    </p>
     <table>
         <thead>
             <tr>
-                <th>Charger</th>
+                <th>Station</th>
                 <th>Location</th>
-                <th>Status</th>
+                <th>Worst socket status</th>
                 <th>Incidents</th>
                 <th>Last incident</th>
                 <th>Last description</th>
@@ -63,7 +58,7 @@
             <tr>
                 <td>{{ row.charger_id }}</td>
                 <td>{{ row.location }}</td>
-                <td>{{ row.status }}</td>
+                <td><span class="status {{ row.status }}">{{ row.status }}</span></td>
                 <td>{{ row.incident_count }}</td>
                 <td>{{ row.last_incident_at or "—" }}</td>
                 <td>{{ row.last_description or "—" }}</td>
@@ -71,28 +66,5 @@
             {% endfor %}
         </tbody>
     </table>
-</section>
-
-<section class="panel explanation">
-    <h3>LoadForecast — domain service</h3>
-    <p>
-        The MVP trains a scikit-learn <code>LinearRegression</code> model on occupied charger
-        telemetry. Features: <code>time_index</code> and <code>hour_of_day</code>. Target:
-        <code>power_kw</code>. When fewer than five occupied readings exist, the service falls
-        back to a mean baseline (<code>MeanBaseline</code>) so the dashboard always has a value.
-    </p>
-    {% if forecast.coefficients %}
-    <p>
-        Learned coefficients: <code>{{ forecast.feature_names }}</code> &rarr;
-        <code>{{ forecast.coefficients }}</code>, intercept <code>{{ forecast.intercept }}</code>.
-        The R&sup2; score above shows how much variance the model explains on the training set.
-    </p>
-    {% endif %}
-    <p>
-        The service maps to the <em>Charging Operations Intelligence</em> bounded context and the
-        <code>LoadForecastCalculated</code> domain event. GET paths are pure queries (CQRS);
-        publishing the forecast as a domain event happens via the explicit
-        <code>POST /api/analytics/forecast/publish</code> endpoint.
-    </p>
 </section>
 {% endblock %}

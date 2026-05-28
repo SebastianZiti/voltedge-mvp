@@ -24,7 +24,7 @@
         <thead>
             <tr>
                 <th>ID</th>
-                <th>Charger</th>
+                <th>Socket</th>
                 <th>Contract</th>
                 <th>Start</th>
                 <th>End</th>
@@ -37,7 +37,7 @@
             {% for session in sessions %}
             <tr>
                 <td>{{ session.id }}</td>
-                <td>{{ session.charger_id }}</td>
+                <td>{{ session.socket_id }}</td>
                 <td>{{ session.contract_id }}</td>
                 <td>{{ session.start_time }}</td>
                 <td>{{ session.end_time or "-" }}</td>

@@ -53,33 +53,56 @@ class MoneyDkk:
 
 @dataclass
 class Charger:
+    # Aggregate root — den fysiske ladestandere (charger) på en lokation.
+    # En charger har ét ID, et navn og en adresse/lokation.
+    # Selve opladningen sker via stik (Socket), som en charger kan have 1-N af.
     id: str
     name: str
     location: str
-    status: ChargerStatus
+
+    def to_record(self):
+        return {"id": self.id, "name": self.name, "location": self.location}
+
+
+@dataclass
+class Socket:
+    # Et enkelt stik/connector på en charger.
+    # En charger kan have 1-N stik (fx 1 Type 2 + 1 CCS).
+    # Status, effekt og heartbeat hører til stikket — ikke chargeren som helhed.
+    id: str
+    charger_id: str
+    socket_number: int
     max_power_kw: float
+    status: ChargerStatus
+    connector_type: str
     last_heartbeat: str | None = None
 
     def can_start_session(self):
         return self.status == ChargerStatus.AVAILABLE
 
     def with_status(self, status: ChargerStatus, heartbeat: str):
-        return Charger(self.id, self.name, self.location, status, self.max_power_kw, heartbeat)
+        return Socket(
+            self.id, self.charger_id, self.socket_number,
+            self.max_power_kw, status, self.connector_type, heartbeat,
+        )
 
     def to_record(self):
         return {
             "id": self.id,
-            "name": self.name,
-            "location": self.location,
-            "status": self.status.value,
+            "charger_id": self.charger_id,
+            "socket_number": self.socket_number,
             "max_power_kw": self.max_power_kw,
+            "status": self.status.value,
+            "connector_type": self.connector_type,
             "last_heartbeat": self.last_heartbeat,
         }
 
 
 @dataclass
 class TelemetryReading:
-    charger_id: str
+    # socket_id: målingen tilhører et specifikt stik, ikke standeren som helhed.
+    # Hvert stik kan lade uafhængigt og have sin egen strøm/spænding/status.
+    socket_id: str
     power_kw: PowerKw
     voltage: float
     current: float
@@ -88,7 +111,7 @@ class TelemetryReading:
 
     def to_record(self):
         return {
-            "charger_id": self.charger_id,
+            "socket_id": self.socket_id,
             "power_kw": self.power_kw.to_float(),
             "voltage": self.voltage,
             "current": self.current,
@@ -100,7 +123,9 @@ class TelemetryReading:
 @dataclass
 class ChargingSession:
     id: int | None
-    charger_id: str
+    # socket_id: sessionen tilhører et stik.
+    # To stik på samme standere kan sagtens have aktive sessioner samtidigt.
+    socket_id: str
     contract_id: str
     start_time: datetime
     end_time: datetime | None
@@ -109,10 +134,10 @@ class ChargingSession:
     status: SessionStatus
 
     @classmethod
-    def start(cls, charger_id: str, contract_id: str, started_at: datetime):
+    def start(cls, socket_id: str, contract_id: str, started_at: datetime):
         return cls(
             id=None,
-            charger_id=charger_id,
+            socket_id=socket_id,
             contract_id=contract_id,
             start_time=started_at,
             end_time=None,
@@ -124,7 +149,7 @@ class ChargingSession:
     def complete(self, ended_at: datetime, energy_kwh: EnergyKwh, price_per_kwh: float):
         return ChargingSession(
             id=self.id,
-            charger_id=self.charger_id,
+            socket_id=self.socket_id,
             contract_id=self.contract_id,
             start_time=self.start_time,
             end_time=ended_at,
@@ -136,7 +161,7 @@ class ChargingSession:
     def to_record(self):
         return {
             "id": self.id,
-            "charger_id": self.charger_id,
+            "socket_id": self.socket_id,
             "contract_id": self.contract_id,
             "start_time": self.start_time.isoformat(timespec="seconds"),
             "end_time": self.end_time.isoformat(timespec="seconds") if self.end_time else None,
@@ -148,6 +173,8 @@ class ChargingSession:
 
 @dataclass
 class Incident:
+    # charger_id: en hændelse knyttes til chargeren, ikke et specifikt stik.
+    # Fx "Chargeren er fysisk beskadiget" gælder hele enheden.
     charger_id: str
     description: str
     severity: str

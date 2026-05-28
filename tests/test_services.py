@@ -14,8 +14,6 @@ class ServiceTests(unittest.TestCase):
         self.db_path = Path(self.temp_dir.name) / "test.db"
         database.init_db(self.db_path)
 
-        # Forhindre at tests rammer den rigtige el-pris-API (elprisenligenu.dk).
-        # Vi tvinger fallback-prisen (3.25) saa testene er deterministiske og virker offline.
         self._price_patcher = mock.patch(
             "price_service._fetch_prices",
             side_effect=ConnectionError("test environment - no real API call"),
@@ -27,19 +25,48 @@ class ServiceTests(unittest.TestCase):
         self._price_patcher.stop()
         self.temp_dir.cleanup()
 
-    def test_database_starts_with_demo_chargers(self):
-        chargers = services.list_chargers(self.db_path)
+    def test_database_starts_with_demo_stations(self):
+        stations = services.list_chargers(self.db_path)
 
-        self.assertEqual(len(chargers), 4)
-        self.assertEqual(chargers[0]["id"], "CH-001")
+        self.assertEqual(len(stations), 4)
+        self.assertEqual(stations[0]["id"], "CH-001")
+
+    def test_demo_stations_have_correct_socket_counts(self):
+        stations = services.list_chargers(self.db_path)
+        by_id = {s["id"]: s for s in stations}
+
+        self.assertEqual(len(by_id["CH-001"]["sockets"]), 2)  # 2 stik
+        self.assertEqual(len(by_id["CH-002"]["sockets"]), 3)  # 3 stik
+        self.assertEqual(len(by_id["CH-003"]["sockets"]), 1)  # 1 stik
+        self.assertEqual(len(by_id["CH-004"]["sockets"]), 2)  # 2 stik
+
+    def test_can_add_station_with_multiple_sockets(self):
+        station = services.add_charger(
+            name="Test Station",
+            location="Testby",
+            sockets=[
+                {"max_power_kw": 22.0, "connector_type": "Type2"},
+                {"max_power_kw": 50.0, "connector_type": "CCS"},
+                {"max_power_kw": 50.0, "connector_type": "CCS"},
+            ],
+            db_path=self.db_path,
+        )
+
+        self.assertIsNotNone(station)
+        self.assertEqual(station["name"], "Test Station")
+
+        stations = services.list_chargers(self.db_path)
+        new_station = next(s for s in stations if s["name"] == "Test Station")
+        self.assertEqual(len(new_station["sockets"]), 3)
 
     def test_can_simulate_telemetry_and_create_events(self):
         created = services.simulate_telemetry(self.db_path)
         telemetry = services.list_telemetry(db_path=self.db_path)
         events = services.list_domain_events(db_path=self.db_path)
 
-        self.assertEqual(len(created), 4)
-        self.assertEqual(len(telemetry), 4)
+        # 8 stik i alt (2+3+1+2), én telemetri-aflæsning per stik
+        self.assertEqual(len(created), 8)
+        self.assertEqual(len(telemetry), 8)
         self.assertTrue(any(event["event_name"] == "TelemetryReceived" for event in events))
 
     def test_can_start_and_end_session(self):
@@ -57,15 +84,21 @@ class ServiceTests(unittest.TestCase):
         kpis = services.calculate_kpis(self.db_path)
 
         self.assertEqual(kpis["charger_count"], 4)
+        self.assertEqual(kpis["socket_count"], 8)
         self.assertIn("forecast_next_hour_kw", kpis)
         self.assertIn("uptime_percent", kpis)
 
-    def test_faulted_charger_reduces_uptime(self):
-        database.execute("UPDATE chargers SET status = ? WHERE id = ?", ("faulted", "CH-001"), db_path=self.db_path)
+    def test_faulted_socket_reduces_uptime(self):
+        # 1 ud af 8 stik er faulted → 7/8 = 87.5%
+        database.execute(
+            "UPDATE sockets SET status = ? WHERE id = ?",
+            ("faulted", "CH-001-S1"),
+            db_path=self.db_path,
+        )
 
         kpis = services.calculate_kpis(self.db_path)
 
-        self.assertEqual(kpis["uptime_percent"], 75.0)
+        self.assertEqual(kpis["uptime_percent"], 87.5)
 
     def test_powerbi_report_rows_contain_all_datasets(self):
         services.simulate_telemetry(self.db_path)
@@ -88,23 +121,30 @@ class ServiceTests(unittest.TestCase):
 
         summary = services.build_powerbi_summary(self.db_path)
 
+        # charger_count bevarer sit navn for PowerBI bagudkompatibilitet
         self.assertEqual(summary["charger_count"], 4)
         self.assertEqual(summary["completed_sessions"], 9)
         self.assertGreater(summary["total_energy_kwh"], 0)
         self.assertIn("generated_at", summary)
 
-    def test_can_seed_demo_sessions_for_all_chargers(self):
+    def test_can_seed_demo_sessions_for_all_sockets(self):
         created = services.seed_demo_sessions(self.db_path)
         sessions = services.list_sessions(self.db_path)
 
         self.assertEqual(len(created), 9)
-        self.assertEqual({session["charger_id"] for session in sessions}, {"CH-001", "CH-002", "CH-003", "CH-004"})
+        # Alle 8 stik er repræsenteret (CH-003-S1 optræder i to sessioner)
+        socket_ids_in_sessions = {session["socket_id"] for session in sessions}
+        self.assertIn("CH-001-S1", socket_ids_in_sessions)
+        self.assertIn("CH-001-S2", socket_ids_in_sessions)
+        self.assertIn("CH-002-S1", socket_ids_in_sessions)
+        self.assertIn("CH-002-S2", socket_ids_in_sessions)
+        self.assertIn("CH-002-S3", socket_ids_in_sessions)
+        self.assertIn("CH-003-S1", socket_ids_in_sessions)
+        self.assertIn("CH-004-S1", socket_ids_in_sessions)
+        self.assertIn("CH-004-S2", socket_ids_in_sessions)
         self.assertTrue(all(session["status"] == "completed" for session in sessions))
 
     def test_seed_demo_sessions_is_idempotent(self):
-        # Hvis brugeren klikker "Generate demo sessions" to gange, maa det
-        # IKKE oprette dubletter. Foer fixet gav andet kald 9 ekstra rakker
-        # med samme charger/start_time, kun forskellig id.
         first_call = services.seed_demo_sessions(self.db_path)
         second_call = services.seed_demo_sessions(self.db_path)
         sessions = services.list_sessions(self.db_path)
@@ -113,18 +153,33 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(len(second_call), 0)
         self.assertEqual(len(sessions), 9)
 
-    def test_cannot_start_second_session_on_occupied_charger(self):
-        first = services.start_session("CH-001", db_path=self.db_path)
-        second = services.start_session("CH-001", db_path=self.db_path)
+    def test_cannot_start_second_session_on_occupied_socket(self):
+        first = services.start_session("CH-001-S1", db_path=self.db_path)
+        second = services.start_session("CH-001-S1", db_path=self.db_path)
 
         self.assertIsNotNone(first)
         self.assertEqual(first["status"], "active")
         self.assertIsNone(second)
 
-    def test_cannot_start_session_on_faulted_charger(self):
-        database.execute("UPDATE chargers SET status = ? WHERE id = ?", ("faulted", "CH-002"), db_path=self.db_path)
+    def test_two_sockets_on_same_station_can_run_simultaneously(self):
+        # Kerneforretningsregel: to stik på SAMME standere kan lade på samme tid.
+        # Det var ikke muligt i den gamle model med én Charger per enhed.
+        first = services.start_session("CH-001-S1", db_path=self.db_path)
+        second = services.start_session("CH-001-S2", db_path=self.db_path)
 
-        result = services.start_session("CH-002", db_path=self.db_path)
+        self.assertIsNotNone(first)
+        self.assertIsNotNone(second)
+        self.assertEqual(first["status"], "active")
+        self.assertEqual(second["status"], "active")
+
+    def test_cannot_start_session_on_faulted_socket(self):
+        database.execute(
+            "UPDATE sockets SET status = ? WHERE id = ?",
+            ("faulted", "CH-002-S1"),
+            db_path=self.db_path,
+        )
+
+        result = services.start_session("CH-002-S1", db_path=self.db_path)
 
         self.assertIsNone(result)
 
@@ -158,8 +213,8 @@ class ServiceTests(unittest.TestCase):
         for index in range(8):
             ts = f"2026-05-23T{10 + index:02d}:00:00"
             database.execute(
-                "INSERT INTO telemetry (charger_id, power_kw, voltage, current, status, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-                ("CH-001", 10.0 + index * 2.0, 230.0, 10.0, "occupied", ts),
+                "INSERT INTO telemetry (socket_id, power_kw, voltage, current, status, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                ("CH-001-S1", 10.0 + index * 2.0, 230.0, 10.0, "occupied", ts),
                 db_path=self.db_path,
             )
 
@@ -181,14 +236,14 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             forecast.model = "Tampered"
 
-    def test_diagnose_incidents_returns_all_chargers_with_zero_when_no_incidents(self):
+    def test_diagnose_incidents_returns_all_stations_with_zero_when_no_incidents(self):
         diagnostics = services.diagnose_incidents_by_charger(self.db_path)
 
         self.assertEqual(len(diagnostics), 4)
         self.assertTrue(all(row["incident_count"] == 0 for row in diagnostics))
         self.assertTrue(all(row["last_incident_at"] is None for row in diagnostics))
 
-    def test_diagnose_incidents_attributes_counts_to_correct_charger(self):
+    def test_diagnose_incidents_attributes_counts_to_correct_station(self):
         database.execute(
             "INSERT INTO incidents (charger_id, description, severity, created_at) VALUES (?, ?, ?, ?)",
             ("CH-002", "first fault", "high", "2026-05-20T10:00:00"),
@@ -212,7 +267,7 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(by_id["CH-002"]["last_description"], "second fault")
         self.assertEqual(by_id["CH-003"]["incident_count"], 1)
         self.assertEqual(by_id["CH-001"]["incident_count"], 0)
-        # Sorteret efter incident_count DESC, sa CH-002 skal vaere foerst.
+        # Sorteret efter incident_count DESC, så CH-002 skal være først
         self.assertEqual(diagnostics[0]["charger_id"], "CH-002")
 
     def test_transaction_rolls_back_on_error(self):
@@ -222,8 +277,8 @@ class ServiceTests(unittest.TestCase):
         try:
             with database.transaction(self.db_path) as db:
                 db.execute(
-                    "INSERT INTO sessions (charger_id, contract_id, start_time, status) VALUES (?, ?, ?, ?)",
-                    ("CH-001", "TEST", "2026-01-01T00:00:00", "active"),
+                    "INSERT INTO sessions (socket_id, contract_id, start_time, status) VALUES (?, ?, ?, ?)",
+                    ("CH-001-S1", "TEST", "2026-01-01T00:00:00", "active"),
                 )
                 db.execute(
                     "INSERT INTO domain_events (event_name, entity_id, description, created_at) VALUES (?, ?, ?, ?)",
