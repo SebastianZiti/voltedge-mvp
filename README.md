@@ -154,6 +154,7 @@ GET  /health
 GET  /ready
 GET  /metrics                          # Prometheus tekst-format
 GET  /api/chargers
+POST /api/chargers
 POST /api/telemetry/simulate
 GET  /api/sessions
 POST /api/sessions/start
@@ -171,9 +172,9 @@ GET  /api/powerbi/report-data
 ## DDD-kobling i koden
 
 - Bounded context: Charging Operations Intelligence.
-- Entities: `Charger`, `ChargingSession`, `TelemetryReading`, `Incident`.
+- Entities: `Charger` (aggregate root), `Socket` (stik på en charger — har status, effekt og heartbeat), `ChargingSession`, `TelemetryReading`, `Incident`.
 - Value objects: `PowerKw`, `EnergyKwh`, `MoneyDkk`, `ChargerStatus`, `SessionStatus`, `LoadForecast` (frozen).
-- Domain events: `ChargerStatusChanged`, `SessionStarted`, `SessionEnded`, `IncidentOpened`, `LoadForecastCalculated`.
+- Domain events: `ChargerAdded`, `ChargerStatusChanged`, `SessionStarted`, `SessionEnded`, `IncidentOpened`, `LoadForecastCalculated`.
 - Integration event: `TelemetryReceived` (signal fra OCPP-konteksten — gemmes i samme tabel for enkelhed, men er begrebsmæssigt en teknisk hændelse, ikke en forretningsbeslutning).
 - Domain services (analytics-trioen):
   - Deskriptiv: `calculate_kpis` (KPI'er, uptime, peak load).
@@ -183,7 +184,7 @@ GET  /api/powerbi/report-data
   - `database.py` — SQLite + transaktioner.
   - `price_service.py` — henter danske spot-priser fra elprisenligenu.dk (DK1/DK2), lægger moms på, cacher pr. dag og region, og falder tilbage til 3.25 DKK/kWh hvis API'et er nede.
   - `observability.py` — Prometheus metrics-rendering.
-- Persistens: SQLite-tabellerne `chargers`, `telemetry`, `sessions`, `incidents`, `domain_events`.
+- Persistens: SQLite-tabellerne `chargers`, `sockets`, `telemetry`, `sessions`, `incidents`, `domain_events`.
 
 Domæneobjekterne ligger i `domain.py`, og service-laget mapper mellem domæneobjekter og SQLite-records i `services.py`.
 
@@ -199,7 +200,7 @@ Se også:
 
 Programmet indeholder:
 
-- Unit- og integrationstests i `tests/` (41 tests, alle grønne).
+- Unit- og integrationstests i `tests/` (44 tests, alle grønne).
 - GitHub Actions CI/CD i `.github/workflows/cicd.yml` — én samlet pipeline med to jobs: `ci` (test + pip-audit + Docker build) og `cd` (publicer image til GitHub Packages). `cd` kører kun hvis `ci` er grøn (`needs: ci`) og kun på `main` eller manuel trigger.
 - Dockerfile med non-root bruger (`appuser`) og healthcheck mod `/ready`.
 - `/health` til simpel liveness.
@@ -314,7 +315,7 @@ tabellen.
 python3 -m unittest discover -s tests
 ```
 
-41 tests fordelt på tre filer:
+44 tests fordelt på tre filer:
 
 - **`tests/test_services.py`** — service-/domain-laget:
   - Database seed med demo-ladestandere.

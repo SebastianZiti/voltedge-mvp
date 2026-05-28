@@ -24,29 +24,35 @@ Det er en UML-lignende klassediagram, men med DDD-stempler (Entity, Value Object
 ### Aggregate root (centrum)
 
 - **Charger** — entity, aggregate root
-  - id (str), name, location, status (ChargerStatus), max_power_kw, last_heartbeat
+  - id (str), name, location
+  - En Charger har 1–N Sockets. Status og effekt hører til Socket, ikke Charger.
   - Tegnes som det største/mest fremtrædende rektangel
   - Markér tydeligt med "<<Aggregate Root>>" eller en krone-emoji
 
 ### Entities (har identitet, knyttet til Charger)
 
-- **TelemetryReading** — en måling fra en charger
-  - charger_id (FK), power_kw, voltage, current, status, timestamp
+- **Socket** — et enkelt stik/connector på en charger
+  - id, charger_id (FK), socket_number, max_power_kw, status (ChargerStatus), connector_type, last_heartbeat
+  - Det er stikket der har status og effekt — to stik på samme charger kan lade to biler samtidigt.
 
-- **ChargingSession** — et opladningsforløb
-  - id, charger_id (FK), contract_id, start_time, end_time, energy_kwh, price_dkk, status
+- **TelemetryReading** — en måling fra et stik
+  - socket_id (FK), power_kw, voltage, current, status, timestamp
+
+- **ChargingSession** — et opladningsforløb på et stik
+  - id, socket_id (FK), contract_id, start_time, end_time, energy_kwh, price_dkk, status
 
 - **Incident** — en fejl-hændelse
   - charger_id (FK), description, severity, created_at, resolved_at
+  - Knyttes til chargeren (ikke stikket) fordi en fysisk fejl gælder hele enheden.
 
-Alle tre har 1:N forhold fra Charger (én charger har mange målinger/sessions/incidents).
+Charger → Socket: 1:N. Socket → TelemetryReading og ChargingSession: 1:N. Charger → Incident: 1:N.
 
 ### Value Objects (immutable, ingen identitet)
 
 - **PowerKw** — effekt i kilowatt (validerer ≥ 0)
 - **EnergyKwh** — energi i kilowatt-timer (validerer ≥ 0)
 - **MoneyDkk** — pris i danske kroner (validerer ≥ 0)
-- **ChargerStatus** (enum) — available / occupied / faulted / offline
+- **ChargerStatus** (enum) — available / occupied / faulted / offline — sidder på Socket, ikke på Charger
 - **SessionStatus** (enum) — active / completed
 - **LoadForecast** (frozen) — resultat af ML-forecasting, kan ikke ændres efter beregning
 
@@ -92,15 +98,24 @@ classDiagram
         +id: str
         +name: str
         +location: str
-        +status: ChargerStatus
+    }
+
+    class Socket {
+        <<Entity>>
+        +id: str
+        +charger_id: str
+        +socket_number: int
         +max_power_kw: float
+        +status: ChargerStatus
+        +connector_type: str
         +last_heartbeat: str
         +can_start_session()
+        +with_status()
     }
 
     class TelemetryReading {
         <<Entity>>
-        +charger_id: str
+        +socket_id: str
         +power_kw: PowerKw
         +voltage: float
         +current: float
@@ -111,7 +126,7 @@ classDiagram
     class ChargingSession {
         <<Entity>>
         +id: int
-        +charger_id: str
+        +socket_id: str
         +contract_id: str
         +start_time: datetime
         +end_time: datetime
@@ -171,18 +186,19 @@ classDiagram
         +intercept: float
     }
 
-    Charger "1" --> "N" TelemetryReading : has
-    Charger "1" --> "N" ChargingSession : has
+    Charger "1" --> "N" Socket : has
     Charger "1" --> "N" Incident : has
+    Socket "1" --> "N" TelemetryReading : has
+    Socket "1" --> "N" ChargingSession : has
 
     TelemetryReading ..> PowerKw : uses
     TelemetryReading ..> ChargerStatus : uses
     ChargingSession ..> EnergyKwh : uses
     ChargingSession ..> MoneyDkk : uses
     ChargingSession ..> SessionStatus : uses
-    Charger ..> ChargerStatus : uses
+    Socket ..> ChargerStatus : uses
 
-    note for Charger "Domain Events publiceres:\n- ChargerStatusChanged\n- SessionStarted\n- SessionEnded\n- IncidentOpened\n- LoadForecastCalculated"
+    note for Charger "Domain Events publiceres:\n- ChargerAdded\n- ChargerStatusChanged\n- SessionStarted\n- SessionEnded\n- IncidentOpened\n- LoadForecastCalculated"
 ```
 
 ---
@@ -195,24 +211,43 @@ classDiagram
                   ║  ────────────────────────────  ║
                   ║  • id: str                     ║
                   ║  • name, location              ║
-                  ║  • status: ChargerStatus       ║
+                  ╚═══════╤════════════════════════╝
+                          │1:N (til sockets)
+                          v
+                  ╔════════════════════════════════╗
+                  ║  Socket <<Entity>>             ║
+                  ║  ────────────────────────────  ║
+                  ║  • id, charger_id (FK)         ║
+                  ║  • socket_number               ║
                   ║  • max_power_kw                ║
+                  ║  • status: ChargerStatus       ║
+                  ║  • connector_type              ║
                   ║  • last_heartbeat              ║
-                  ╚═══════╤═══════════╤═══════════╤╝
-                          │1:N        │1:N        │1:N
-              ┌───────────┘           │           └────────┐
-              v                       v                    v
-   ┌──────────────────┐  ┌────────────────────┐ ┌────────────────┐
-   │ TelemetryReading │  │  ChargingSession   │ │   Incident     │
-   │   <<Entity>>     │  │   <<Entity>>       │ │  <<Entity>>    │
-   │ ───────────────  │  │ ─────────────────  │ │ ──────────────│
-   │ power_kw         │  │ contract_id        │ │ description   │
-   │ voltage, current │  │ start_time         │ │ severity      │
-   │ status, timestamp│  │ end_time           │ │ created_at    │
-   │                  │  │ energy_kwh         │ │ resolved_at   │
-   │                  │  │ price_dkk          │ │               │
-   │                  │  │ status             │ │               │
-   └──────────────────┘  └────────────────────┘ └────────────────┘
+                  ╚═══════╤═══════════╤════════════╝
+                          │1:N        │1:N
+              ┌───────────┘           └────────────┐
+              v                                    v
+   ┌──────────────────┐              ┌────────────────────┐
+   │ TelemetryReading │              │  ChargingSession   │
+   │   <<Entity>>     │              │   <<Entity>>       │
+   │ ───────────────  │              │ ─────────────────  │
+   │ socket_id (FK)   │              │ socket_id (FK)     │
+   │ power_kw         │              │ contract_id        │
+   │ voltage, current │              │ start_time         │
+   │ status, timestamp│              │ end_time           │
+   │                  │              │ energy_kwh         │
+   │                  │              │ price_dkk, status  │
+   └──────────────────┘              └────────────────────┘
+
+   ┌────────────────┐
+   │   Incident     │   (charger_id FK — gælder
+   │  <<Entity>>    │    hele enheden, ikke ét stik)
+   │ ──────────────│
+   │ description   │
+   │ severity      │
+   │ created_at    │
+   │ resolved_at   │
+   └────────────────┘
 
    ┌─── VALUE OBJECTS ────────────────────────────────────┐
    │  PowerKw   EnergyKwh   MoneyDkk                      │
@@ -240,13 +275,15 @@ classDiagram
 ## Når du tegner det selv — tjekliste
 
 - [ ] Charger er fremhævet som aggregate root (størst, anden farve, krone-ikon)
-- [ ] Pile mellem Charger og de tre child-entities har "1" og "N" markeringer
+- [ ] Socket vist som child-entity under Charger (1:N pil fra Charger til Socket)
+- [ ] Pile fra Socket til TelemetryReading og ChargingSession med "1" og "N" markeringer
+- [ ] Pil fra Charger til Incident (1:N) — incident knyttes til charger, ikke socket
 - [ ] Hver entity har en label "<<Entity>>"
 - [ ] Value objects er tydeligt adskilt (anden farve eller form)
 - [ ] Hver value object har "<<Value Object>>" label
 - [ ] LoadForecast har "frozen" eller "immutable" markering
 - [ ] Domain events listes separat som "post-its" — IKKE med pile til entities
-- [ ] TelemetryReceived er adskilt fra de 5 domain events (eller helt udeladt)
+- [ ] TelemetryReceived er adskilt fra de 6 domain events (eller helt udeladt)
 - [ ] Diagrammet har en titel: "Domænemodel — Charging Operations Intelligence"
 
 ---

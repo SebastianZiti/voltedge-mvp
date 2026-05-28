@@ -22,8 +22,8 @@ flowchart TD
     I --> J["Generate telemetry"]
     J --> K["POST /simulate"]
     K --> L["services.simulate_telemetry()"]
-    L --> M["Opretter TelemetryReading"]
-    M --> N["Opdaterer Charger status"]
+    L --> M["Opretter TelemetryReading per socket"]
+    M --> N["Opdaterer Socket status"]
     N --> O["Gemmer event i domain_events-tabel<br/>TelemetryReceived (integration event)<br/>ChargerStatusChanged (domain event)"]
     O --> H
     H --> C
@@ -38,11 +38,11 @@ flowchart TD
     T --> U["Start session"]
     U --> V["POST /sessions/start"]
     V --> W["services.start_session()"]
-    W --> X["Charger.can_start_session()"]
-    X --> Y{"Charger er ikke<br/>offline/faulted?"}
+    W --> X["Socket.can_start_session()"]
+    X --> Y{"Socket er available?"}
     Y -->|"Ja"| Z["ChargingSession.start()"]
     Z --> AA["Gem session som ACTIVE"]
-    AA --> AB["Sæt charger til OCCUPIED"]
+    AA --> AB["Sæt socket til OCCUPIED<br/>(atomic claim)"]
     AB --> AC["Gem DomainEvent<br/>SessionStarted"]
     AC --> H
     Y -->|"Nej"| S
@@ -54,7 +54,7 @@ flowchart TD
     AFP --> AG["ChargingSession.complete()"]
     AG --> AH["Beregner energy_kwh og price_dkk"]
     AH --> AI["Gem session som COMPLETED"]
-    AI --> AJ["Sæt charger til AVAILABLE"]
+    AI --> AJ["Sæt socket til AVAILABLE"]
     AJ --> AK["Gem DomainEvent<br/>SessionEnded"]
     AK --> H
 
@@ -101,12 +101,12 @@ Et centralt eksempel er start af en session:
 
 1. Brugeren klikker start session.
 2. `app.py` kalder `services.start_session()`.
-3. `services.py` finder en charger i databasen.
-4. Chargeren laves til et `Charger`-domæneobjekt.
-5. `Charger.can_start_session()` tjekker om den må starte en session.
+3. `services.py` finder et ledigt socket i databasen.
+4. Stikket laves til et `Socket`-domæneobjekt.
+5. `Socket.can_start_session()` tjekker om stikket er `available`.
 6. Hvis ja, oprettes en `ChargingSession` — alt inden for én `database.transaction()`-context manager.
-7. Sessionen gemmes i databasen.
-8. Chargeren sættes til `occupied` via **atomic claim** (`UPDATE … WHERE status='available'`), så to samtidige requests ikke kan starte en session på samme charger.
+7. Sessionen gemmes i databasen med `socket_id`.
+8. Stikket sættes til `occupied` via **atomic claim** (`UPDATE … WHERE status='available'`), så to samtidige requests ikke kan starte en session på samme stik. To stik på samme charger kan dog have aktive sessioner **samtidigt**.
 9. Der gemmes et domain event: `SessionStarted`.
 
 ## CI/CD-flow (DevSecOps)

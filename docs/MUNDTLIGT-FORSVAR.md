@@ -11,7 +11,7 @@ Hvert afsnit kan stå alene — du behøver ikke huske detaljerne, kun det centr
 | Machine Learning som domain service (`forecast_load_next_hour`) | ✅ sklearn LinearRegression med R²-score |
 | Deskriptive + diagnostiske + predictive analyser | ✅ `calculate_kpis`, `diagnose_incidents_by_charger`, `forecast_load_next_hour` |
 | Realtids el-pris-integration (`price_service`) | ✅ elprisenligenu.dk, regionsopdelt DK1/DK2, fallback + cache |
-| Tests | ✅ 41/41 grønne |
+| Tests | ✅ 44/44 grønne |
 | Sikkerhedshærdning | ✅ USER i Docker, /ready info-leak, SECRET_KEY hard-fail (m. loophole-fix), seed-demo gate |
 | CI/CD | ✅ Samlet i `cicd.yml`, CD via `needs: ci`, pip-audit indbygget |
 | Docker image i registry | ✅ `ghcr.io/sebastianziti/voltedge-mvp:latest` + SHA-tags |
@@ -29,10 +29,12 @@ Hvert afsnit kan stå alene — du behøver ikke huske detaljerne, kun det centr
 > Det er den del af VoltEdges forretning der handler om at vide hvad ladestanderne laver lige nu —
 > hvilke der er ledige, hvilke der lader, hvor meget energi der bruges, og hvad der er gået galt.
 >
-> Inde i det bounded context har vi 4 **entities** (Charger, ChargingSession, TelemetryReading,
-> Incident) og 4 **value objects** (PowerKw, EnergyKwh, MoneyDkk, LoadForecast). Entities har
-> identitet — fx har en Charger et ID som "CH-001" og lever over tid. Value objects beskriver
-> bare en værdi og kan ikke ændres efter de er oprettet.
+> Inde i det bounded context har vi 5 **entities** (Charger, Socket, ChargingSession,
+> TelemetryReading, Incident) og 4 **value objects** (PowerKw, EnergyKwh, MoneyDkk, LoadForecast).
+> Entities har identitet — fx har en Charger et ID som "CH-001" og lever over tid.
+> En `Charger` er selve standerskabet; `Socket` er de individuelle stik i det — status og effekt
+> hører til stikket, og to stik på samme charger kan lade to biler samtidigt.
+> Value objects beskriver bare en værdi og kan ikke ændres efter de er oprettet.
 >
 > Hver gang noget vigtigt sker — fx en session starter, eller en charger melder fejl —
 > publicerer vi et **domain event** og gemmer det i tabellen `domain_events`. Det giver os et
@@ -43,7 +45,7 @@ Hvert afsnit kan stå alene — du behøver ikke huske detaljerne, kun det centr
 | DDD-begreb | Fil | Linje |
 |------------|-----|-------|
 | Bounded context | `docs/ARCHITECTURE.md` | toppen |
-| Entities | `domain.py` | `Charger`, `ChargingSession`, `TelemetryReading`, `Incident` |
+| Entities | `domain.py` | `Charger`, `Socket`, `ChargingSession`, `TelemetryReading`, `Incident` |
 | Value objects | `domain.py` | `PowerKw`, `EnergyKwh`, `MoneyDkk`, `LoadForecast` |
 | Domain events | `domain.py` | `DomainEvent` + tabellen `domain_events` i `database.py` |
 | Domain service | `services.py` | `forecast_load_next_hour()` |
@@ -132,13 +134,13 @@ r2 = float(model.score(X, y))        # kvalitets-score
 
 > Når en bruger starter en charging session, sker der **3 ting i databasen** der hører sammen:
 >
-> 1. Charger-statussen ændres fra `available` til `occupied`
-> 2. En ny række indsættes i `sessions`-tabellen med status `active`
+> 1. Socket-statussen ændres fra `available` til `occupied`
+> 2. En ny række indsættes i `sessions`-tabellen med status `active` og `socket_id`
 > 3. Et `SessionStarted`-domain-event gemmes i `domain_events`
 >
-> Hvis programmet **crasher** mellem fx step 1 og step 2, ville charger stå som "occupied"
-> uden at der er en tilhørende session. Det er en ulovlig forretningstilstand — så har vi en
-> "ghost charger" der ikke kan udlejes igen.
+> Hvis programmet **crasher** mellem fx step 1 og step 2, ville stikket stå som "occupied"
+> uden at der er en tilhørende session. Det er en ulovlig forretningstilstand — så har vi et
+> "ghost socket" der ikke kan bruges igen.
 >
 > Vi løste det med en **transaktion**: enten gennemføres alle 3 trin sammen, eller også
 > rulles alle ændringer tilbage. Det er implementeret som en `transaction()`-context-manager
@@ -146,8 +148,9 @@ r2 = float(model.score(X, y))        # kvalitets-score
 >
 > Vi tilføjede også et **atomic claim**-mønster: i stedet for først at læse og så skrive
 > (hvor en anden bruger kunne sneake ind imellem), gør vi det i én SQL-sætning:
-> `UPDATE chargers SET status='occupied' WHERE id=? AND status='available'`. Hvis nogen anden
-> nåede at tage chargeren først, opdaterer SQL'en 0 rækker, og vi melder fejl tilbage.
+> `UPDATE sockets SET status='occupied' WHERE id=? AND status='available'`. Hvis nogen anden
+> nåede at tage stikket først, opdaterer SQL'en 0 rækker, og vi melder fejl tilbage.
+> To stik på **samme** charger kan dog have aktive sessioner **samtidigt** — de er uafhængige.
 
 **Hvis censor spørger:** "Hvad er ACID?"
 
@@ -176,7 +179,8 @@ r2 = float(model.score(X, y))        # kvalitets-score
 >
 > Eksempler fra koden:
 >
-> - `Charger` (entity) — har ID, status ændres over tid
+> - `Charger` (entity) — har ID og lever over tid; status hører til dens `Socket`s
+- `Socket` (entity) — har ID og `status` der skifter fra `available` til `occupied` osv.
 > - `PowerKw(22.0)` (value object) — bare et tal med betydning, kan ikke ændres
 > - `EnergyKwh(10.5)` (value object) — kan ikke være negativ (validerings-regel i `__post_init__`)
 > - `LoadForecast(...)` (value object, frozen) — resultat af en ML-prediction
@@ -444,17 +448,32 @@ r2 = float(model.score(X, y))        # kvalitets-score
 
 **Konkret kode at pege på** (`services.py` `diagnose_incidents_by_charger`):
 ```sql
-SELECT c.id AS charger_id, c.location, c.status,
-       COUNT(i.id) AS incident_count,
+SELECT c.id AS charger_id, c.name, c.location,
+       COUNT(DISTINCT i.id) AS incident_count,
        MAX(i.created_at) AS last_incident_at,
        (SELECT description FROM incidents
         WHERE charger_id = c.id
-        ORDER BY created_at DESC LIMIT 1) AS last_description
+        ORDER BY created_at DESC LIMIT 1) AS last_description,
+       COALESCE(
+           (SELECT s.status FROM sockets s
+            WHERE s.charger_id = c.id
+            ORDER BY CASE s.status
+                WHEN 'faulted'  THEN 0
+                WHEN 'offline'  THEN 1
+                WHEN 'occupied' THEN 2
+                ELSE 3 END
+            LIMIT 1),
+           'unknown'
+       ) AS status
 FROM chargers c
 LEFT JOIN incidents i ON i.charger_id = c.id
 GROUP BY c.id
 ORDER BY incident_count DESC, c.id ASC
 ```
+
+Status hentes nu fra `sockets`-tabellen via en subquery — chargers har ikke længere
+en `status`-kolonne direkte. COALESCE sikrer at chargers uden stik viser 'unknown'
+i stedet for NULL.
 
 **Tests:** 2 nye tests i `test_services.py`
 (`test_diagnose_incidents_returns_all_chargers_with_zero_when_no_incidents`,

@@ -74,20 +74,22 @@ Legend:
 
 | Term | Meaning in this MVP | Code location |
 | --- | --- | --- |
-| `Charger` | A charging station managed by VoltEdge. | `domain.py`, `chargers` table |
-| `ChargerStatus` | Operational charger state: available, occupied, faulted or offline. | `domain.py` |
-| `TelemetryReading` | A point-in-time charger measurement with power, voltage, current and status. | `domain.py`, `telemetry` table |
-| `ChargingSession` | A charging session with contract, start/end time, energy and price. | `domain.py`, `sessions` table |
+| `Charger` | A charging station managed by VoltEdge — the physical cabinet. Has id, name and location. One charger can have 1–N sockets. | `domain.py`, `chargers` table |
+| `Socket` | A single connector on a charger. Owns the operational state: status, max power, connector type and heartbeat. Two sockets on the same charger can charge two vehicles simultaneously. | `domain.py`, `sockets` table |
+| `ChargerStatus` | Operational socket state: available, occupied, faulted or offline. Belongs to `Socket`, not `Charger`. | `domain.py` |
+| `TelemetryReading` | A point-in-time socket measurement with power, voltage, current and status. References `socket_id`. | `domain.py`, `telemetry` table |
+| `ChargingSession` | A charging session on a specific socket with contract, start/end time, energy and price. References `socket_id`. | `domain.py`, `sessions` table |
 | `SessionStatus` | Session state: active or completed. | `domain.py` |
-| `Incident` | Operational problem created from a faulted charger state. | `domain.py`, `incidents` table |
+| `Incident` | Operational problem created from a faulted socket state. Attached to `charger_id` because a physical fault affects the whole unit. | `domain.py`, `incidents` table |
 | `DomainEvent` | Business event persisted for traceability and analytics. | `domain.py`, `domain_events` table |
-| `LoadForecast` | Predicted next-hour load based on recent occupied charger telemetry. | `services.forecast_load_next_hour` |
+| `LoadForecast` | Predicted next-hour load based on recent occupied socket telemetry. | `services.forecast_load_next_hour` |
 
 ## DDD Mapping
 
 ### Entities
 
-- `Charger`
+- `Charger` (aggregate root)
+- `Socket` (connector on a charger — owns status, max power, heartbeat)
 - `ChargingSession`
 - `TelemetryReading`
 - `Incident`
@@ -115,6 +117,7 @@ the prediction result cannot be mutated after it is produced.
 Domain events describe business-relevant facts that operations, billing or
 analytics react to. They are stored in the `domain_events` table:
 
+- `ChargerAdded`
 - `ChargerStatusChanged`
 - `SessionStarted`
 - `SessionEnded`
@@ -181,6 +184,7 @@ voltedge.db             Operational database
 The database mirrors the bounded context:
 
 - `chargers`
+- `sockets`
 - `telemetry`
 - `sessions`
 - `incidents`
@@ -203,27 +207,48 @@ event without forcing a foreign-key relationship.
             | id (PK)             |
             | name                |
             | location            |
-            | status              |
-            | max_power_kw        |
-            | last_heartbeat      |
             +----------+----------+
                        |
-        +--------------+--------------+
-        |              |              |
-        | 1:N          | 1:N          | 1:N
-        v              v              v
-+---------------+ +-----------+ +---------------+
-|   telemetry   | | sessions  | |  incidents    |
-|---------------| |-----------| |---------------|
-| id (PK)       | | id (PK)   | | id (PK)       |
-| charger_id FK | | charger_id| | charger_id FK |
-| power_kw      | |   FK      | | description   |
-| voltage       | | contract  | | severity      |
-| current       | | start/end | | created_at    |
-| status        | | energy    | | resolved_at   |
-| timestamp     | | price     | +---------------+
-+---------------+ | status    |
-                  +-----------+
+                       | 1:N
+                       v
+            +---------------------+
+            |       sockets       |
+            |---------------------|
+            | id (PK)             |
+            | charger_id FK       |
+            | socket_number       |
+            | max_power_kw        |
+            | status              |
+            | connector_type      |
+            | last_heartbeat      |
+            +-----+------+--------+
+                  |      |
+        +---------+      +---------+
+        | 1:N              | 1:N
+        v                  v
++---------------+    +-----------+
+|   telemetry   |    | sessions  |
+|---------------|    |-----------|
+| id (PK)       |    | id (PK)   |
+| socket_id FK  |    | socket_id |
+| power_kw      |    |   FK      |
+| voltage       |    | contract  |
+| current       |    | start/end |
+| status        |    | energy    |
+| timestamp     |    | price     |
++---------------+    | status    |
+                     +-----------+
+
+       +---------------------+
+       |      incidents      |   (charger_id FK —
+       |---------------------|    fault affects the
+       | id (PK)             |    whole charger unit)
+       | charger_id FK       |
+       | description         |
+       | severity            |
+       | created_at          |
+       | resolved_at         |
+       +---------------------+
 
        +---------------------+
        |    domain_events    |   (audit log — no FK,
