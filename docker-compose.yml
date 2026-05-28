@@ -3,6 +3,7 @@ services:
     build:
       context: .
     image: voltedge-mvp:latest
+    pull_policy: build
     container_name: voltedge-app
     environment:
       SERVICE_ENV: development
